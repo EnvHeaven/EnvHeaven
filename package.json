@@ -1,0 +1,40 @@
+{
+  "name": "envheaven",
+  "version": "0.1.0",
+  "description": "Small publishable CLI for discovering and resolving envheaven env-repos.",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "envheaven": "dist/cli.js",
+    "eh": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build",
+    "start": "node dist/cli.js",
+    "test": "tsx --test tests/**/*.test.ts"
+  },
+  "keywords": [
+    "envheaven",
+    "cli",
+    "env",
+    "jsonc"
+  ],
+  "dependencies": {
+    "jsonc-parser": "^3.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
