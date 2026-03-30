@@ -1,17 +1,25 @@
 import { createDiagnostic } from "../diagnostics";
 import type { CommandIntent, Diagnostic, SupportedTarget } from "../types";
 
-const SUPPORTED_KEYWORDS = new Set([
-  "run",
-  "deploy",
+const RUN_TARGET_KEYWORDS = new Set([
   "default",
+  "local",
+  "local-01",
+  "fake",
+  "fake-local",
+  "fake-local-01",
+]);
+
+const DEPLOY_TARGET_KEYWORDS = new Set([
   "local",
   "local-01",
   "production",
   "production-01",
-  "fake",
-  "fake-local",
-  "fake-local-01",
+]);
+
+const SPECIAL_COMMAND_KEYWORDS = new Set([
+  "offiline-web-ui",
+  "offline-web-ui",
 ]);
 
 const HARD_REJECT_KEYWORDS = new Set(["last", "development"]);
@@ -20,9 +28,8 @@ export function inferCommandIntent(args: string[]): {
   intent: CommandIntent | null;
   diagnostics: Diagnostic[];
 } {
-  const normalizedTokens = args
-    .map((token) => token.trim().toLowerCase())
-    .filter((token) => token.length > 0);
+  const trimmedArgs = args.map((token) => token.trim()).filter((token) => token.length > 0);
+  const normalizedTokens = trimmedArgs.map((token) => token.toLowerCase());
 
   if (normalizedTokens.length === 0) {
     return {
@@ -44,39 +51,41 @@ export function inferCommandIntent(args: string[]): {
         ],
       };
     }
-
-    if (!SUPPORTED_KEYWORDS.has(token)) {
-      return {
-        intent: null,
-        diagnostics: [
-          createDiagnostic("error", "unknown-command-token", `Unknown token "${token}".`),
-        ],
-      };
-    }
   }
 
   const runCount = normalizedTokens.filter((token) => token === "run").length;
   const deployCount = normalizedTokens.filter((token) => token === "deploy").length;
-  if (runCount > 1) {
+  const offilineCount = normalizedTokens.filter((token) => SPECIAL_COMMAND_KEYWORDS.has(token)).length;
+
+  if (runCount > 1 || deployCount > 1 || offilineCount > 1) {
     return {
       intent: null,
-      diagnostics: [createDiagnostic("error", "ambiguous-command", "Command contains multiple run tags.")],
+      diagnostics: [createDiagnostic("error", "ambiguous-command", "Command contains repeated action tags.")],
     };
   }
 
-  if (deployCount > 1) {
+  if ([runCount > 0, deployCount > 0, offilineCount > 0].filter(Boolean).length > 1) {
     return {
       intent: null,
-      diagnostics: [createDiagnostic("error", "ambiguous-command", "Command contains multiple deploy tags.")],
+      diagnostics: [createDiagnostic("error", "ambiguous-command", "Command cannot mix run, deploy, and offiline-web-ui tags.")],
     };
   }
 
-  if (runCount > 0 && deployCount > 0) {
+  if (offilineCount === 1) {
+    if (normalizedTokens.length !== 1) {
+      return {
+        intent: null,
+        diagnostics: [createDiagnostic("error", "unsupported-command-shape", "offiline-web-ui does not accept extra tokens.")],
+      };
+    }
+
     return {
-      intent: null,
-      diagnostics: [
-        createDiagnostic("error", "ambiguous-command", "Command cannot mix run and deploy tags in v0.1.0."),
-      ],
+      intent: {
+        kind: "offiline-web-ui",
+        rawArgs: args,
+        normalizedTokens,
+      },
+      diagnostics: [],
     };
   }
 
@@ -107,6 +116,19 @@ export function inferCommandIntent(args: string[]): {
 
   if (runCount === 1) {
     const targetTokens = normalizedTokens.filter((token) => token !== "run");
+    if (!targetTokens.every((token) => RUN_TARGET_KEYWORDS.has(token))) {
+      return {
+        intent: null,
+        diagnostics: [
+          createDiagnostic(
+            "error",
+            "unsupported-command-shape",
+            `Unsupported or ambiguous run target: "${targetTokens.join(" ")}".`,
+          ),
+        ],
+      };
+    }
+
     const target = parseSupportedRunTarget(targetTokens);
     if (!target) {
       return {
@@ -132,16 +154,17 @@ export function inferCommandIntent(args: string[]): {
     };
   }
 
-  const targetTokens = normalizedTokens.filter((token) => token !== "deploy");
-  const target = parseSupportedDeployTarget(targetTokens);
-  if (!target) {
+  const deployTokens = trimmedArgs.filter((token) => token.toLowerCase() !== "deploy");
+  const normalizedDeployTokens = deployTokens.map((token) => token.toLowerCase());
+  const parsedDeploy = parseSupportedDeployTarget(normalizedDeployTokens);
+  if (!parsedDeploy) {
     return {
       intent: null,
       diagnostics: [
         createDiagnostic(
           "error",
           "unsupported-command-shape",
-          `Unsupported or ambiguous deploy target: "${targetTokens.join(" ")}".`,
+          `Unsupported or ambiguous deploy target: "${normalizedDeployTokens.join(" ")}".`,
         ),
       ],
     };
@@ -150,9 +173,10 @@ export function inferCommandIntent(args: string[]): {
   return {
     intent: {
       kind: "deploy",
-      target,
+      target: parsedDeploy.target,
       rawArgs: args,
       normalizedTokens,
+      artifactSelectors: parsedDeploy.artifactSelectors,
     },
     diagnostics: [],
   };
@@ -185,17 +209,26 @@ function parseSupportedRunTarget(tokens: string[]): SupportedTarget | null {
   return null;
 }
 
-function parseSupportedDeployTarget(tokens: string[]): SupportedTarget | null {
-  if (tokens.length !== 1) {
+function parseSupportedDeployTarget(tokens: string[]): { target: SupportedTarget; artifactSelectors: string[] } | null {
+  const targetTokens = tokens.filter((token) => DEPLOY_TARGET_KEYWORDS.has(token));
+  const artifactSelectors = tokens.filter((token) => !DEPLOY_TARGET_KEYWORDS.has(token));
+
+  if (targetTokens.length !== 1) {
     return null;
   }
 
-  if (tokens[0] === "local" || tokens[0] === "local-01") {
-    return "local-01";
+  if (targetTokens[0] === "local" || targetTokens[0] === "local-01") {
+    return {
+      target: "local-01",
+      artifactSelectors,
+    };
   }
 
-  if (tokens[0] === "production" || tokens[0] === "production-01") {
-    return "production-01";
+  if (targetTokens[0] === "production" || targetTokens[0] === "production-01") {
+    return {
+      target: "production-01",
+      artifactSelectors,
+    };
   }
 
   return null;

@@ -21,12 +21,15 @@
   - `envheaven run fake local`
   - `envheaven run fake local-01`
   - `envheaven run fake-local-01`
-  - `envheaven deploy local`
-  - `envheaven deploy local-01`
-  - `envheaven deploy production`
-  - `envheaven deploy production-01`
-  - `eh run local`
-  - `eh default`
+- `envheaven deploy local`
+- `envheaven deploy local-01`
+- `envheaven deploy production`
+- `envheaven deploy production-01`
+- `envheaven deploy production @envheaven/plugins-offiline-web-ui`
+- `envheaven deploy local envheaven`
+- `envheaven offiline-web-ui`
+- `eh run local`
+- `eh default`
 
 ## Not Implemented in v0.1.0
 
@@ -44,11 +47,15 @@ npm install -g envheaven
 
 ## CLI Behavior
 
-Running `envheaven` or `eh` without arguments starts a minimal local daemon and prints its port as JSON.
+Running `envheaven` or `eh` without arguments starts a minimal local daemon, prints its port as JSON, and prints a tip for `envheaven offiline-web-ui`.
+
+Running `envheaven offiline-web-ui` starts the daemon, loads the local UI package from the workspace when available, otherwise installs `@envheaven/plugins-offiline-web-ui` into a per-user cache, and then starts the UI server.
 
 Running a supported `run` intent resolves the repo, loads the plugin declared in the resolved execution, calls `inspect()` when provided, then calls `execute()` when there are no blocking diagnostics.
 
 Running a supported `deploy` intent materializes repo-level deploy steps and per-artifact distributor executions, then executes them sequentially. The current deploy support is intentionally narrow and targets EnvHeaven-style package monorepos that define `RepoDeployExecutions` and `ArtifactsDistributors`.
+
+Deploy commands can now accept additional artifact selector tags after the deploy target. If no selectors are supplied, all deployable artifacts still run. Selectors match artifact ids, package names, and common aliases like `envheaven` or `plugins-nodejs-pnpm`. Ambiguous selectors are rejected.
 
 On Windows, direct `pnpm` and `npm` deploy steps run natively in the Windows host environment for the package-monorepo workflow. Other commands still follow the existing WSL delegation path in v0.1.0.
 
@@ -156,6 +163,39 @@ The daemon uses Node's built-in `http` module and exposes read-only JSON endpoin
 - `GET /plans/local-01`
 - `GET /plans/fake-local`
 - `GET /plans/fake-local-01`
+
+The daemon now also exposes local-state and version-registry endpoints for the UI:
+
+- `GET /api/status`
+- `GET /api/repos`
+- `POST /api/repos/select`
+- `GET /api/versions`
+- `POST /api/versions/set`
+- `POST /api/versions/increment`
+
+## Version registry and dynamic artifact versions
+
+EnvHeaven keeps a per-user local version registry for artifact deploys and UI state:
+
+- Windows: `%LOCALAPPDATA%\\EnvHeaven\\state\\state.json`
+- Linux: `$XDG_STATE_HOME/envheaven/state.json` or `~/.local/state/envheaven/state.json`
+
+For `production-01`, the registry's `nextVersion` overrides the checked-in `package.json` version at publish time. EnvHeaven temporarily rewrites `package.json`, runs `npm publish`, and restores the original file afterward. On success it advances:
+
+- `lastVersion = deployed version`
+- `nextVersion = patch increment of deployed version`
+
+If no registry entry exists, production deploy falls back to the current `package.json` version and emits a warning diagnostic.
+
+`dynamic-artifact-version` can be used in artifact env vars. During execution it resolves to the registry value for the current repo and artifact, falling back to the artifact `package.json` version when no registry record exists yet.
+
+## Git tagging
+
+Successful production deploys create a local tag in the artifact repo when the artifact lives in a nested git repo or submodule:
+
+- `build-v<version>_<deployTarget>`
+
+Tags are local by default. Set `EH_GIT_PUSH_TAGS=1` to push them to `origin`.
 
 ## Example Output
 

@@ -78,6 +78,7 @@ export function resolvePlan(
     resolvedTarget: targetResolution.resolvedTarget,
     targetResolutionTrace: targetResolution.trace,
     mergeOrder,
+    selectedArtifacts: [],
     diagnostics,
     trace,
     repoExecutions,
@@ -598,13 +599,16 @@ function materializeArtifactDistributors(
 
     const status: ArtifactExecutionPlan["status"] = execution ? "runnable" : "partial";
 
-    return {
-      artifactName,
-      runnerName: distributorName,
-      status,
-      diagnostics: artifactDiagnostics,
-      trace,
-      execution,
+      return {
+        artifactName,
+        packageName: readStringValue(baseArtifact, ["PackageName", "packageName"]),
+        repoCloneFolderPath: readStringValue(baseArtifact, ["RepoCloneFolderPath", "repoCloneFolderPath"]),
+        deployTarget: resolvedTarget,
+        runnerName: distributorName,
+        status,
+        diagnostics: artifactDiagnostics,
+        trace,
+        execution,
     };
   });
   diagnostics.push(...artifactExecutions.flatMap((artifactExecution) => artifactExecution.diagnostics));

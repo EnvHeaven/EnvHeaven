@@ -9,10 +9,11 @@ export interface Diagnostic {
 }
 
 export interface CommandIntent {
-  kind: "daemon" | "run" | "deploy";
+  kind: "daemon" | "run" | "deploy" | "offiline-web-ui";
   target?: SupportedTarget;
   rawArgs: string[];
   normalizedTokens: string[];
+  artifactSelectors?: string[];
 }
 
 export type SupportedTarget =
@@ -56,6 +57,9 @@ export interface ExecutionSpec {
 
 export interface ArtifactExecutionPlan {
   artifactName: string;
+  packageName?: string;
+  repoCloneFolderPath?: string;
+  deployTarget?: string;
   runnerName: string;
   status: "runnable" | "partial" | "blocked";
   diagnostics: Diagnostic[];
@@ -77,6 +81,7 @@ export interface ResolvedPlan {
   resolvedTarget: string;
   targetResolutionTrace: string[];
   mergeOrder: string[];
+  selectedArtifacts: string[];
   diagnostics: Diagnostic[];
   trace: MergeTraceEntry[];
   repoExecutions: RepoExecutionPlan[];

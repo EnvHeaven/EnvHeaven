@@ -1,22 +1,46 @@
 import http from "node:http";
+import path from "node:path";
 import { buildRepoModel } from "../envrepo/model";
 import { discoverEnvRepo } from "../envrepo/discovery";
 import { resolvePlan } from "../envrepo/resolver";
 import { loadPlugin } from "../plugins/loader";
+import { computeNextVersionSuggestion, readPackageMetadata } from "../deploy/runtime";
+import {
+  EnvHeavenStateStore,
+  incrementPatchVersion,
+  isValidVersionString,
+  type ArtifactVersionRecord,
+  type RepoStateRecord,
+} from "../state/store";
 import type { RepoModel, SupportedTarget } from "../types";
 
 const SUPPORTED_TARGETS: SupportedTarget[] = ["default", "local", "local-01", "fake-local", "fake-local-01"];
 
-export async function startDaemon(rootDirectory: string, port = 0): Promise<http.Server> {
-  let cachedRepoModel: RepoModel | null = null;
+interface ParsedRequestBody {
+  [key: string]: unknown;
+}
 
-  const ensureRepoModel = async (): Promise<RepoModel> => {
-    if (!cachedRepoModel) {
-      const discovery = await discoverEnvRepo(rootDirectory);
-      cachedRepoModel = buildRepoModel(discovery);
+export async function startDaemon(
+  rootDirectory: string,
+  port = 0,
+  stateStore = new EnvHeavenStateStore(),
+): Promise<http.Server> {
+  const normalizedRootDirectory = path.resolve(rootDirectory);
+  await stateStore.rememberRepo(normalizedRootDirectory);
+  let selectedRepoRoot = normalizedRootDirectory;
+  const repoModelCache = new Map<string, RepoModel>();
+
+  const ensureRepoModel = async (repoRoot = selectedRepoRoot): Promise<RepoModel> => {
+    const normalizedRepoRoot = path.resolve(repoRoot);
+    const cached = repoModelCache.get(normalizedRepoRoot);
+    if (cached) {
+      return cached;
     }
 
-    return cachedRepoModel;
+    const discovery = await discoverEnvRepo(normalizedRepoRoot);
+    const repoModel = buildRepoModel(discovery);
+    repoModelCache.set(normalizedRepoRoot, repoModel);
+    return repoModel;
   };
 
   const server = http.createServer(async (request, response) => {
@@ -27,23 +51,19 @@ export async function startDaemon(rootDirectory: string, port = 0): Promise<http
       }
 
       const url = new URL(request.url, "http://127.0.0.1");
-      if (request.method !== "GET") {
-        sendJson(response, 405, { error: "Method not allowed." });
-        return;
-      }
 
-      if (url.pathname === "/") {
+      if (request.method === "GET" && url.pathname === "/") {
         sendHtml(response, 200, buildLandingPage());
         return;
       }
 
-      if (url.pathname === "/repo/discovery") {
+      if (request.method === "GET" && url.pathname === "/repo/discovery") {
         const repoModel = await ensureRepoModel();
         sendJson(response, 200, repoModel.discovery);
         return;
       }
 
-      if (url.pathname === "/plugin/status") {
+      if (request.method === "GET" && url.pathname === "/plugin/status") {
         const repoModel = await ensureRepoModel();
         const statuses = await Promise.all(
           SUPPORTED_TARGETS.map(async (target) => {
@@ -56,7 +76,7 @@ export async function startDaemon(rootDirectory: string, port = 0): Promise<http
               };
             }
 
-            const plugin = await loadPlugin(plan.pluginPackage, rootDirectory);
+            const plugin = await loadPlugin(plan.pluginPackage, selectedRepoRoot);
             return {
               target,
               pluginPackage: plan.pluginPackage,
@@ -70,7 +90,7 @@ export async function startDaemon(rootDirectory: string, port = 0): Promise<http
         return;
       }
 
-      if (url.pathname.startsWith("/plans/")) {
+      if (request.method === "GET" && url.pathname.startsWith("/plans/")) {
         const target = url.pathname.replace("/plans/", "") as SupportedTarget;
         if (!SUPPORTED_TARGETS.includes(target)) {
           sendJson(response, 404, { error: `Unsupported target "${target}".` });
@@ -79,6 +99,123 @@ export async function startDaemon(rootDirectory: string, port = 0): Promise<http
 
         const repoModel = await ensureRepoModel();
         sendJson(response, 200, resolvePlan(repoModel, target));
+        return;
+      }
+
+      if (url.pathname === "/api/status" && request.method === "GET") {
+        const repoModel = await ensureRepoModel();
+        const address = server.address();
+        const daemonPort = typeof address === "object" && address ? address.port : null;
+        const selectedRepo = await stateStore.getSelectedRepo(selectedRepoRoot);
+        sendJson(response, 200, {
+          ok: true,
+          daemon: {
+            port: daemonPort,
+            repoRoot: selectedRepoRoot,
+          },
+          selectedRepo,
+          repoDiagnostics: repoModel.diagnostics,
+          commands: [
+            "envheaven",
+            "envheaven offiline-web-ui",
+            "envheaven deploy local",
+            "envheaven deploy production",
+          ],
+          features: [
+            "env-repo discovery",
+            "deploy planning",
+            "artifact version registry",
+            "dynamic-artifact-version resolution",
+            "offline UI support",
+          ],
+          plugins: Object.values(repoModel.artifacts).map((artifact) => artifact.PackageName ?? artifact.packageName).filter(Boolean),
+        });
+        return;
+      }
+
+      if (url.pathname === "/api/repos" && request.method === "GET") {
+        const repos = await stateStore.listRepos();
+        const selectedRepo = await stateStore.getSelectedRepo(selectedRepoRoot);
+        sendJson(response, 200, {
+          selectedRepoId: selectedRepo?.repoId ?? null,
+          selectedRepoRoot,
+          repos,
+        });
+        return;
+      }
+
+      if (url.pathname === "/api/repos/select" && request.method === "POST") {
+        const payload = await readJsonBody(request);
+        const requestedRepoRoot = typeof payload.repoRoot === "string" ? path.resolve(payload.repoRoot) : "";
+        if (!requestedRepoRoot) {
+          sendJson(response, 400, { error: "repoRoot is required." });
+          return;
+        }
+
+        const discovery = await discoverEnvRepo(requestedRepoRoot);
+        const repoModel = buildRepoModel(discovery);
+        if (repoModel.diagnostics.some((diagnostic) => diagnostic.code === "base-layer-missing")) {
+          sendJson(response, 400, { error: `No valid EnvHeaven repo was found at "${requestedRepoRoot}".`, diagnostics: repoModel.diagnostics });
+          return;
+        }
+
+        selectedRepoRoot = requestedRepoRoot;
+        repoModelCache.set(requestedRepoRoot, repoModel);
+        const selectedRepo = await stateStore.setSelectedRepo(requestedRepoRoot);
+        sendJson(response, 200, {
+          ok: true,
+          selectedRepo,
+        });
+        return;
+      }
+
+      if (url.pathname === "/api/versions" && request.method === "GET") {
+        const repoModel = await ensureRepoModel();
+        const versions = await buildVersionPayload(repoModel, selectedRepoRoot, stateStore);
+        sendJson(response, 200, {
+          repoRoot: selectedRepoRoot,
+          versions,
+        });
+        return;
+      }
+
+      if (url.pathname === "/api/versions/set" && request.method === "POST") {
+        const payload = await readJsonBody(request);
+        const artifactName = typeof payload.artifactName === "string" ? payload.artifactName : "";
+        const packageName = typeof payload.packageName === "string" ? payload.packageName : undefined;
+        const nextVersion = typeof payload.nextVersion === "string" ? payload.nextVersion.trim() : undefined;
+        const lastVersion = typeof payload.lastVersion === "string" ? payload.lastVersion.trim() : undefined;
+
+        if (!artifactName) {
+          sendJson(response, 400, { error: "artifactName is required." });
+          return;
+        }
+
+        if ((nextVersion && !isValidVersionString(nextVersion)) || (lastVersion && !isValidVersionString(lastVersion))) {
+          sendJson(response, 400, { error: "lastVersion and nextVersion must be valid semantic versions." });
+          return;
+        }
+
+        const updated = await stateStore.setArtifactVersion(selectedRepoRoot, artifactName, packageName, {
+          lastVersion,
+          nextVersion,
+        });
+        sendJson(response, 200, { ok: true, record: updated });
+        return;
+      }
+
+      if (url.pathname === "/api/versions/increment" && request.method === "POST") {
+        const payload = await readJsonBody(request);
+        const artifactName = typeof payload.artifactName === "string" ? payload.artifactName : "";
+        const packageName = typeof payload.packageName === "string" ? payload.packageName : undefined;
+        const baseVersion = typeof payload.baseVersion === "string" ? payload.baseVersion : undefined;
+        if (!artifactName) {
+          sendJson(response, 400, { error: "artifactName is required." });
+          return;
+        }
+
+        const record = await stateStore.incrementArtifactNextVersion(selectedRepoRoot, artifactName, packageName, baseVersion);
+        sendJson(response, 200, { ok: true, record });
         return;
       }
 
@@ -97,8 +234,68 @@ export async function startDaemon(rootDirectory: string, port = 0): Promise<http
   return server;
 }
 
+async function buildVersionPayload(
+  repoModel: RepoModel,
+  repoRoot: string,
+  stateStore: EnvHeavenStateStore,
+): Promise<Array<Record<string, unknown>>> {
+  const records = await stateStore.getVersionRecords(repoRoot);
+  const recordByArtifact = new Map<string, ArtifactVersionRecord>(records.map((record) => [record.artifactName, record]));
+
+  return await Promise.all(
+    Object.entries(repoModel.artifacts)
+      .sort((left, right) => left[0].localeCompare(right[0]))
+      .map(async ([artifactName, artifactValue]) => {
+        const rawPackageName = artifactValue.PackageName ?? artifactValue.packageName;
+        const rawRepoCloneFolderPath = artifactValue.RepoCloneFolderPath ?? artifactValue.repoCloneFolderPath;
+        const packageName = typeof rawPackageName === "string" ? rawPackageName : undefined;
+        const repoCloneFolderPath =
+          typeof rawRepoCloneFolderPath === "string" ? path.resolve(repoRoot, rawRepoCloneFolderPath) : undefined;
+        const registryRecord = recordByArtifact.get(artifactName);
+
+        let packageVersion: string | undefined;
+        if (repoCloneFolderPath) {
+          try {
+            packageVersion = (await readPackageMetadata(repoCloneFolderPath)).version;
+          } catch {
+            packageVersion = undefined;
+          }
+        }
+
+        return {
+          artifactName,
+          packageName,
+          repoCloneFolderPath,
+          packageVersion,
+          lastVersion: registryRecord?.lastVersion,
+          nextVersion: registryRecord?.nextVersion ?? packageVersion ?? incrementPatchVersion("0.1.0"),
+          suggestedNextVersion: computeNextVersionSuggestion(registryRecord?.nextVersion ?? registryRecord?.lastVersion ?? packageVersion ?? "0.1.0"),
+        };
+      }),
+  );
+}
+
+async function readJsonBody(request: http.IncomingMessage): Promise<ParsedRequestBody> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    chunks.push(Buffer.from(chunk));
+  }
+
+  if (chunks.length === 0) {
+    return {};
+  }
+
+  const rawBody = Buffer.concat(chunks).toString("utf8").trim();
+  if (rawBody.length === 0) {
+    return {};
+  }
+
+  return JSON.parse(rawBody) as ParsedRequestBody;
+}
+
 function sendJson(response: http.ServerResponse, statusCode: number, payload: unknown): void {
   response.statusCode = statusCode;
+  response.setHeader("access-control-allow-origin", "*");
   response.setHeader("content-type", "application/json; charset=utf-8");
   response.end(JSON.stringify(payload, null, 2));
 }
@@ -140,9 +337,12 @@ function buildLandingPage(): string {
   <body>
     <h1>EnvHeaven Daemon</h1>
     <p>Daemon status: running.</p>
-    <p>Repo status: <a href="/repo/discovery">/repo/discovery</a></p>
+    <p>Tip: run <code>envheaven offiline-web-ui</code> to install and launch the offline UI.</p>
     <p>JSON endpoints:</p>
     <ul>
+      <li><a href="/api/status">/api/status</a></li>
+      <li><a href="/api/repos">/api/repos</a></li>
+      <li><a href="/api/versions">/api/versions</a></li>
       <li><a href="/repo/discovery">/repo/discovery</a></li>
       <li><a href="/plugin/status">/plugin/status</a></li>
       <li><a href="/plans/default">/plans/default</a></li>

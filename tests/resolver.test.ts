@@ -143,13 +143,20 @@ test("materializes deploy local-01 with workspace steps and per-artifact local i
   assert.equal(plan.repoExecutions.length, 2);
   assert.deepEqual(plan.repoExecutions[0]?.execution?.args, ["install"]);
   assert.deepEqual(plan.repoExecutions[1]?.execution?.args, ["-r", "--if-present", "run", "build"]);
-  assert.equal(plan.artifactExecutions.filter((entry) => entry.status === "runnable").length, 2);
+  assert.equal(plan.artifactExecutions.filter((entry) => entry.status === "runnable").length, 3);
   assert.ok(
     plan.artifactExecutions.some(
       (entry) =>
         entry.runnerName === "envheaven-package-local-01" &&
         entry.execution?.args[0] === "install" &&
         entry.execution?.args[2] === path.resolve(repoRoot, "artifacts/envheaven-pkg-01"),
+    ),
+  );
+  assert.ok(
+    plan.artifactExecutions.some(
+      (entry) =>
+        entry.runnerName === "envheaven-plugin-offiline-web-ui-local-01" &&
+        entry.execution?.args[2] === path.resolve(repoRoot, "artifacts/envheaven-pkg-plugin-offiline-web-ui-01"),
     ),
   );
 });
@@ -170,6 +177,14 @@ test("materializes deploy production-01 with npm auth and scoped public publish"
         entry.runnerName === "envheaven-plugin-nodejs-pnpm-production-01" &&
         entry.execution?.args.includes("--access") &&
         entry.execution?.args.includes("public"),
+    ),
+  );
+  assert.ok(
+    plan.artifactExecutions.some(
+      (entry) =>
+        entry.runnerName === "envheaven-plugin-offiline-web-ui-production-01" &&
+        entry.execution?.args.includes("--access") &&
+        entry.execution?.cwd === path.resolve(repoRoot, "artifacts/envheaven-pkg-plugin-offiline-web-ui-01"),
     ),
   );
 });

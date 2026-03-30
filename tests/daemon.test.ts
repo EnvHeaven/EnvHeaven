@@ -40,3 +40,35 @@ test("serves discovery, plugin status, and plan endpoints", async () => {
     });
   }
 });
+
+test("serves status, repo list, and version registry endpoints", async () => {
+  const repoRoot = path.join(fixturesRoot, "repo-deploy");
+  const server = await startDaemon(repoRoot, 0);
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+
+  try {
+    const statusResponse = await fetch(`http://127.0.0.1:${port}/api/status`);
+    const reposResponse = await fetch(`http://127.0.0.1:${port}/api/repos`);
+    const versionsResponse = await fetch(`http://127.0.0.1:${port}/api/versions`);
+
+    assert.equal(statusResponse.status, 200);
+    assert.equal(reposResponse.status, 200);
+    assert.equal(versionsResponse.status, 200);
+
+    const statusPayload = (await statusResponse.json()) as { ok: boolean; commands: string[] };
+    const reposPayload = (await reposResponse.json()) as { repos: Array<{ repoRoot: string }> };
+    const versionsPayload = (await versionsResponse.json()) as { versions: Array<{ artifactName: string }> };
+
+    assert.equal(statusPayload.ok, true);
+    assert.ok(statusPayload.commands.includes("envheaven offiline-web-ui"));
+    assert.ok(reposPayload.repos.some((repo) => repo.repoRoot === repoRoot));
+    assert.ok(
+      versionsPayload.versions.some((entry) => entry.artifactName === "envheaven-plugin-offiline-web-ui-01"),
+    );
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+});
