@@ -9,7 +9,7 @@ export interface Diagnostic {
 }
 
 export interface CommandIntent {
-  kind: "daemon" | "run";
+  kind: "daemon" | "run" | "deploy";
   target?: SupportedTarget;
   rawArgs: string[];
   normalizedTokens: string[];
@@ -19,6 +19,7 @@ export type SupportedTarget =
   | "default"
   | "local"
   | "local-01"
+  | "production-01"
   | "fake-local"
   | "fake-local-01";
 
@@ -62,13 +63,23 @@ export interface ArtifactExecutionPlan {
   execution: ExecutionSpec | null;
 }
 
+export interface RepoExecutionPlan {
+  name: string;
+  status: "runnable" | "partial" | "blocked";
+  diagnostics: Diagnostic[];
+  trace: string[];
+  execution: ExecutionSpec | null;
+}
+
 export interface ResolvedPlan {
+  kind: "run" | "deploy";
   requestedTarget: SupportedTarget;
   resolvedTarget: string;
   targetResolutionTrace: string[];
   mergeOrder: string[];
   diagnostics: Diagnostic[];
   trace: MergeTraceEntry[];
+  repoExecutions: RepoExecutionPlan[];
   artifactExecutions: ArtifactExecutionPlan[];
   execution: ExecutionSpec | null;
   pluginPackage?: string;
@@ -131,6 +142,8 @@ export interface RepoModel {
   envMapLayers: Record<string, Record<string, unknown>>;
   artifacts: Record<string, Record<string, unknown>>;
   artifactsRunners: Record<string, Record<string, unknown>>;
+  artifactsDistributors: Record<string, Record<string, unknown>>;
+  repoDeployExecutions: Record<string, Record<string, unknown>[]>;
   aliases: Record<string, string[]>;
   fallbackList: string[];
   diagnostics: Diagnostic[];

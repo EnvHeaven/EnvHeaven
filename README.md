@@ -21,16 +21,18 @@
   - `envheaven run fake local`
   - `envheaven run fake local-01`
   - `envheaven run fake-local-01`
+  - `envheaven deploy local-01`
+  - `envheaven deploy production-01`
   - `eh run local`
   - `eh default`
 
 ## Not Implemented in v0.1.0
 
-- `deploy`
 - `last`
 - `development`
 - marketplace or plugin auto-install
-- env-map rewrites beyond `RunCommand` to `Execution` normalization for planning/execution
+- deploy support beyond the current package-monorepo use case
+- env-map rewrites beyond the current normalization and materialization behavior
 
 ## Installation
 
@@ -42,7 +44,11 @@ npm install -g envheaven
 
 Running `envheaven` or `eh` without arguments starts a minimal local daemon and prints its port as JSON.
 
-Running a supported `run` intent resolves the repo, loads the plugin declared in the resolved execution, calls `inspect()` when provided, then calls `execute()` when there are no blocking diagnostics. The CLI prints a JSON payload containing parsed intent, resolved plan, plugin details, execution result, and severity-tagged diagnostics.
+Running a supported `run` intent resolves the repo, loads the plugin declared in the resolved execution, calls `inspect()` when provided, then calls `execute()` when there are no blocking diagnostics.
+
+Running a supported `deploy` intent materializes repo-level deploy steps and per-artifact distributor executions, then executes them sequentially. The current deploy support is intentionally narrow and targets EnvHeaven-style package monorepos that define `RepoDeployExecutions` and `ArtifactsDistributors`.
+
+The CLI prints a JSON payload containing parsed intent, resolved plan, execution details, and severity-tagged diagnostics.
 
 ## Minimal Env-Repo Shape
 
@@ -52,7 +58,10 @@ Running a supported `run` intent resolves the repo, loads the plugin declared in
 - `aliases` or `Aliases`
 - `fallback-list`, `fallbackList`, or `FallbackList`
 
-Each resolved target should expose `Execution` or `RunCommand`. `RunCommand` is normalized into `Execution` only for planning/execution.
+Run-oriented env layers may remain execution-free. v0.1.0 can now:
+
+- materialize `run` plans from `ArtifactsRunners`
+- materialize `deploy` plans from `RepoDeployExecutions` and `ArtifactsDistributors`
 
 `Type: "fallback-list"` layers may point at another layer through `TargetName`. v0.1.0 now dereferences that chain recursively before merge resolution and reports `requestedTarget`, `resolvedTarget`, `targetResolutionTrace`, `mergeOrder`, and `trace` in the resolved plan.
 
@@ -172,6 +181,34 @@ The daemon uses Node's built-in `http` module and exposes read-only JSON endpoin
 }
 ```
 
+Deploy example:
+
+```json
+{
+  "intent": {
+    "kind": "deploy",
+    "target": "local-01"
+  },
+  "plan": {
+    "kind": "deploy",
+    "requestedTarget": "local-01",
+    "resolvedTarget": "local-01"
+  },
+  "deploy": {
+    "repoExecutions": [
+      {
+        "name": "workspace-install"
+      }
+    ],
+    "artifactExecutions": [
+      {
+        "runnerName": "envheaven-package-local-01"
+      }
+    ]
+  }
+}
+```
+
 Rejected command:
 
 ```json
@@ -179,8 +216,8 @@ Rejected command:
   "diagnostics": [
     {
       "severity": "error",
-      "code": "unsupported-command",
-      "message": "Unsupported token \"deploy\" in v0.1.0."
+      "code": "unsupported-command-shape",
+      "message": "Unsupported or ambiguous deploy target: \"default\"."
     }
   ]
 }

@@ -12,6 +12,8 @@ const acceptedCases = [
   { args: ["run", "fake", "local-01"], kind: "run", target: "fake-local-01" },
   { args: ["run", "default"], kind: "run", target: "default" },
   { args: ["default"], kind: "run", target: "default" },
+  { args: ["deploy", "local-01"], kind: "deploy", target: "local-01" },
+  { args: ["deploy", "production-01"], kind: "deploy", target: "production-01" },
 ];
 
 for (const acceptedCase of acceptedCases) {
@@ -27,8 +29,9 @@ for (const acceptedCase of acceptedCases) {
 const rejectedCases = [
   ["run"],
   ["deploy"],
-  ["deploy", "last"],
+  ["deploy", "local"],
   ["deploy", "default"],
+  ["deploy", "last"],
   ["run", "deploy"],
   ["run", "deploy", "local"],
   ["run", "local", "development"],

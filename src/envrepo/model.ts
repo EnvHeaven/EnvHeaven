@@ -35,6 +35,8 @@ export function buildRepoModel(discovery: RepoDiscoveryResult): RepoModel {
   const envMapLayers: RepoModel["envMapLayers"] = {};
   const artifacts = baseFile ? normalizeNamedRecords(baseFile.payload?.Artifacts) : {};
   const artifactsRunners = baseFile ? normalizeNamedRecords(baseFile.payload?.ArtifactsRunners) : {};
+  const artifactsDistributors = baseFile ? normalizeNamedRecords(baseFile.payload?.ArtifactsDistributors) : {};
+  const repoDeployExecutions = baseFile ? normalizeExecutionGroups(baseFile.payload?.RepoDeployExecutions) : {};
   const aliases: RepoModel["aliases"] = {};
   const fallbackList: string[] = [];
 
@@ -73,6 +75,8 @@ export function buildRepoModel(discovery: RepoDiscoveryResult): RepoModel {
     envMapLayers,
     artifacts,
     artifactsRunners,
+    artifactsDistributors,
+    repoDeployExecutions,
     aliases,
     fallbackList,
     diagnostics,
@@ -90,6 +94,23 @@ function normalizeNamedRecords(value: unknown): Record<string, Record<string, un
     if (isRecord(entryValue)) {
       result[key] = deepCloneRecord(entryValue);
     }
+  }
+
+  return result;
+}
+
+function normalizeExecutionGroups(value: unknown): Record<string, Record<string, unknown>[]> {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  const result: Record<string, Record<string, unknown>[]> = {};
+  for (const [key, entryValue] of Object.entries(value)) {
+    if (!Array.isArray(entryValue)) {
+      continue;
+    }
+
+    result[key] = entryValue.filter((item): item is Record<string, unknown> => isRecord(item)).map(deepCloneRecord);
   }
 
   return result;

@@ -20,3 +20,16 @@ test("emits parse errors for malformed JSONC", async () => {
   assert.equal(result.files.length, 1);
   assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "jsonc-parse-error"));
 });
+
+test("ignores nested envheaven fixtures under skipped directories", async () => {
+  const repoRoot = path.join(fixturesRoot, "repo-skip-nested");
+  const result = await discoverEnvRepo(repoRoot);
+
+  assert.equal(result.envDirectories.length, 1);
+  assert.equal(result.files.length, 1);
+  assert.equal(
+    result.files[0]?.sourcePath.endsWith(path.join(".envheaven", "repo-base.default.envheaven.env-map-layer.json")),
+    true,
+  );
+  assert.equal(result.diagnostics.some((diagnostic) => diagnostic.code === "jsonc-parse-error"), false);
+});

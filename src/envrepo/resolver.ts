@@ -5,6 +5,7 @@ import type {
   Diagnostic,
   ExecutionSpec,
   MergeTraceEntry,
+  RepoExecutionPlan,
   RepoModel,
   ResolvedPlan,
   SupportedTarget,
@@ -12,7 +13,11 @@ import type {
 
 const ALLOWED_CONDITION_TYPES = new Set(["always-force", "only-if-full-setup-completion"]);
 
-export function resolvePlan(repoModel: RepoModel, target: SupportedTarget): ResolvedPlan {
+export function resolvePlan(
+  repoModel: RepoModel,
+  target: SupportedTarget,
+  kind: "run" | "deploy" = "run",
+): ResolvedPlan {
   const diagnostics: Diagnostic[] = [...repoModel.diagnostics];
   const trace: MergeTraceEntry[] = [];
   const initialTarget = resolveAlias(repoModel, target, diagnostics);
@@ -31,21 +36,28 @@ export function resolvePlan(repoModel: RepoModel, target: SupportedTarget): Reso
   }
 
   validateConditionTypes(resolvedModel, diagnostics, []);
-  const artifactExecutions = materializeArtifactExecutions(
-    repoModel,
-    resolvedModel,
-    targetResolution.resolvedTarget,
-    diagnostics,
-  );
-  const execution = artifactExecutions.find((artifactExecution) => artifactExecution.status === "runnable")?.execution ?? null;
+  const repoExecutions =
+    kind === "deploy"
+      ? materializeRepoDeployExecutions(repoModel, targetResolution.resolvedTarget, diagnostics)
+      : [];
+  const artifactExecutions =
+    kind === "deploy"
+      ? materializeArtifactDistributors(repoModel, resolvedModel, targetResolution.resolvedTarget, diagnostics)
+      : materializeArtifactExecutions(repoModel, resolvedModel, targetResolution.resolvedTarget, diagnostics);
+  const execution =
+    repoExecutions.find((repoExecution) => repoExecution.status === "runnable")?.execution ??
+    artifactExecutions.find((artifactExecution) => artifactExecution.status === "runnable")?.execution ??
+    null;
   const pluginPackage = execution?.pluginPackage;
 
-  if (!execution && artifactExecutions.length === 0) {
+  if (!execution && repoExecutions.length === 0 && artifactExecutions.length === 0) {
     diagnostics.push(
       createDiagnostic(
         "error",
         "execution-missing",
-        "No ArtifactsRunners were available to materialize runnable artifact executions.",
+        kind === "deploy"
+          ? "No deploy executions were available to materialize."
+          : "No ArtifactsRunners were available to materialize runnable artifact executions.",
       ),
     );
   } else if (!execution) {
@@ -53,18 +65,22 @@ export function resolvePlan(repoModel: RepoModel, target: SupportedTarget): Reso
       createDiagnostic(
         "error",
         "execution-missing",
-        "No runnable artifact executions remained after materialization.",
+        kind === "deploy"
+          ? "No runnable deploy executions remained after materialization."
+          : "No runnable artifact executions remained after materialization.",
       ),
     );
   }
 
   return {
+    kind,
     requestedTarget: target,
     resolvedTarget: targetResolution.resolvedTarget,
     targetResolutionTrace: targetResolution.trace,
     mergeOrder,
     diagnostics,
     trace,
+    repoExecutions,
     artifactExecutions,
     execution,
     pluginPackage,
@@ -412,6 +428,7 @@ function materializeArtifactExecutions(
       runnerValue,
       repoModel.rootDirectory,
       templateContext,
+      true,
       blockedByPlanErrors,
       artifactDiagnostics,
       materializationTrace,
@@ -431,6 +448,169 @@ function materializeArtifactExecutions(
   return artifactExecutions;
 }
 
+function materializeRepoDeployExecutions(
+  repoModel: RepoModel,
+  resolvedTarget: string,
+  diagnostics: Diagnostic[],
+): RepoExecutionPlan[] {
+  const blockedByPlanErrors = hasErrors(diagnostics);
+  const steps = repoModel.repoDeployExecutions[resolvedTarget] ?? [];
+  const repoExecutions: RepoExecutionPlan[] = steps.map((step, index) => {
+    const stepDiagnostics: Diagnostic[] = [];
+    const name = typeof step.Name === "string" ? step.Name : `repo-step-${String(index + 1)}`;
+    const executionRecord = normalizeExecutionRecord(step);
+
+    if (!executionRecord) {
+      stepDiagnostics.push(
+        createDiagnostic("warning", "repo-deploy-execution-missing", `Deploy step "${name}" has no Execution or RunCommand.`),
+      );
+      return {
+        name,
+        status: "partial" as const,
+        diagnostics: stepDiagnostics,
+        trace: [`repo-step:${name}`],
+        execution: null,
+      };
+    }
+
+    const execution = materializeExecutionRecord(
+      name,
+      "__repo__",
+      executionRecord,
+      step,
+      repoModel.rootDirectory,
+      {
+        envMapName: resolvedTarget,
+        envVarsJson: "{}",
+      },
+      false,
+      blockedByPlanErrors,
+      stepDiagnostics,
+      [`repo-step:${name}`],
+    );
+
+    const status: ArtifactExecutionPlan["status"] = execution ? "runnable" : "partial";
+
+    return {
+      name,
+      status,
+      diagnostics: stepDiagnostics,
+      trace: [`repo-step:${name}`],
+      execution,
+    };
+  });
+  diagnostics.push(...repoExecutions.flatMap((repoExecution) => repoExecution.diagnostics));
+  return repoExecutions;
+}
+
+function materializeArtifactDistributors(
+  repoModel: RepoModel,
+  resolvedModel: Record<string, unknown>,
+  resolvedTarget: string,
+  diagnostics: Diagnostic[],
+): ArtifactExecutionPlan[] {
+  const resolvedArtifacts = normalizeNamedRecords(resolvedModel.Artifacts);
+  const blockedByPlanErrors = hasErrors(diagnostics);
+  const distributors = Object.entries(repoModel.artifactsDistributors)
+    .filter(([, distributorValue]) => readStringValue(distributorValue, ["DeployTarget", "deployTarget"]) === resolvedTarget)
+    .sort((left, right) => {
+      const leftOrder = readNumericValue(left[1], ["Order", "order"]) ?? Number.MAX_SAFE_INTEGER;
+      const rightOrder = readNumericValue(right[1], ["Order", "order"]) ?? Number.MAX_SAFE_INTEGER;
+      return leftOrder - rightOrder || left[0].localeCompare(right[0]);
+    });
+
+  const artifactExecutions: ArtifactExecutionPlan[] = distributors.map(([distributorName, distributorValue]) => {
+    const artifactDiagnostics: Diagnostic[] = [];
+    const artifactName = readArtifactName(distributorValue) ?? "";
+    const trace = [`distributor:${distributorName}`, `artifact:${artifactName}`];
+
+    if (!artifactName) {
+      artifactDiagnostics.push(
+        createDiagnostic("warning", "artifact-distributor-artifact-missing", `Distributor "${distributorName}" does not declare ArtifactName.`),
+      );
+      return {
+        artifactName,
+        runnerName: distributorName,
+        status: "partial" as const,
+        diagnostics: artifactDiagnostics,
+        trace,
+        execution: null,
+      };
+    }
+
+    const baseArtifact = repoModel.artifacts[artifactName];
+    if (!baseArtifact) {
+      artifactDiagnostics.push(
+        createDiagnostic("warning", "artifact-missing", `Artifact "${artifactName}" referenced by distributor "${distributorName}" was not found in repo-base Artifacts.`),
+      );
+      return {
+        artifactName,
+        runnerName: distributorName,
+        status: "partial" as const,
+        diagnostics: artifactDiagnostics,
+        trace,
+        execution: null,
+      };
+    }
+
+    if (readBooleanValue(baseArtifact, ["Private", "private"]) === true && resolvedTarget === "production-01") {
+      artifactDiagnostics.push(
+        createDiagnostic("info", "artifact-private-skip", `Skipping private artifact "${artifactName}" for production publish.`),
+      );
+      return {
+        artifactName,
+        runnerName: distributorName,
+        status: "partial" as const,
+        diagnostics: artifactDiagnostics,
+        trace,
+        execution: null,
+      };
+    }
+
+    const finalArtifact = deepMergeObjects(baseArtifact, resolvedArtifacts[artifactName] ?? {});
+    const executionRecord = normalizeExecutionRecord(distributorValue);
+    if (!executionRecord) {
+      artifactDiagnostics.push(
+        createDiagnostic("warning", "artifact-distributor-execution-missing", `Distributor "${distributorName}" has no Execution or RunCommand.`),
+      );
+      return {
+        artifactName,
+        runnerName: distributorName,
+        status: "partial" as const,
+        diagnostics: artifactDiagnostics,
+        trace,
+        execution: null,
+      };
+    }
+
+    const execution = materializeExecutionRecord(
+      distributorName,
+      artifactName,
+      executionRecord,
+      distributorValue,
+      repoModel.rootDirectory,
+      buildTemplateContext(finalArtifact, resolvedTarget, repoModel.rootDirectory),
+      false,
+      blockedByPlanErrors,
+      artifactDiagnostics,
+      trace,
+    );
+
+    const status: ArtifactExecutionPlan["status"] = execution ? "runnable" : "partial";
+
+    return {
+      artifactName,
+      runnerName: distributorName,
+      status,
+      diagnostics: artifactDiagnostics,
+      trace,
+      execution,
+    };
+  });
+  diagnostics.push(...artifactExecutions.flatMap((artifactExecution) => artifactExecution.diagnostics));
+  return artifactExecutions;
+}
+
 function materializeExecutionRecord(
   runnerName: string,
   artifactName: string,
@@ -438,6 +618,7 @@ function materializeExecutionRecord(
   runnerValue: Record<string, unknown>,
   repoRoot: string,
   templateContext: TemplateContext,
+  requirePluginPackage: boolean,
   blockedByPlanErrors: boolean,
   diagnostics: Diagnostic[],
   trace: string[],
@@ -465,7 +646,7 @@ function materializeExecutionRecord(
     "pluginPackage",
   );
 
-  if (!pluginPackage) {
+  if (requirePluginPackage && !pluginPackage) {
     diagnostics.push(
       createDiagnostic(
         "warning",
@@ -612,6 +793,26 @@ function readStringValue(value: Record<string, unknown>, keys: string[]): string
   for (const key of keys) {
     if (typeof value[key] === "string") {
       return value[key] as string;
+    }
+  }
+
+  return undefined;
+}
+
+function readNumericValue(value: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const key of keys) {
+    if (typeof value[key] === "number") {
+      return value[key] as number;
+    }
+  }
+
+  return undefined;
+}
+
+function readBooleanValue(value: Record<string, unknown>, keys: string[]): boolean | undefined {
+  for (const key of keys) {
+    if (typeof value[key] === "boolean") {
+      return value[key] as boolean;
     }
   }
 

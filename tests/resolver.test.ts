@@ -29,7 +29,7 @@ test("materializes local-01 artifact execution plans through ArtifactsRunners", 
   const repoModel = buildRepoModel(discovery);
   const plan = resolvePlan(repoModel, "local");
 
-  assert.equal(plan.execution?.pluginPackage, "@envheaven/plugin-nodejs-pnpm");
+  assert.equal(plan.execution?.pluginPackage, "@envheaven/plugins-nodejs-pnpm");
   assert.equal(plan.execution?.command, "node");
   assert.deepEqual(plan.execution?.args, [
     "serve",
@@ -51,12 +51,12 @@ test("materializes fake-local-01 artifact execution plans through ArtifactsRunne
 
   assert.equal(plan.requestedTarget, "fake-local");
   assert.equal(plan.resolvedTarget, "fake-local-01");
-  assert.equal(plan.execution?.pluginPackage, "@envheaven/plugin-nodejs-pnpm");
+  assert.equal(plan.execution?.pluginPackage, "@envheaven/plugins-nodejs-pnpm");
   assert.equal(plan.artifactExecutions.length, 3);
   const firebaseArtifact = plan.artifactExecutions.find(
     (artifactExecution) => artifactExecution.runnerName === "firebase-hosting-secondary",
   );
-  assert.equal(firebaseArtifact?.execution?.pluginPackage, "@envheaven/plugin-firebase-hosting-deploy");
+  assert.equal(firebaseArtifact?.execution?.pluginPackage, "@envheaven/plugins-firebase-hosting-deploy");
   assert.equal(firebaseArtifact?.execution?.args[1], "fake-local-01");
   assert.match(firebaseArtifact?.execution?.env.EH_ENV_VARS_JSON ?? "", /"EH_PROFILE":"fake-local"/);
 });
@@ -73,8 +73,8 @@ test("rejects unsupported conditions after TargetName dereferencing", async () =
 
 test("loads renamed scoped plugins from local fixture metadata", async () => {
   const repoRoot = path.join(fixturesRoot, "repo-basic");
-  const nodePlugin = await loadPlugin("@envheaven/plugin-nodejs-pnpm", repoRoot);
-  const firebasePlugin = await loadPlugin("@envheaven/plugin-firebase-hosting-deploy", repoRoot);
+  const nodePlugin = await loadPlugin("@envheaven/plugins-nodejs-pnpm", repoRoot);
+  const firebasePlugin = await loadPlugin("@envheaven/plugins-firebase-hosting-deploy", repoRoot);
 
   assert.equal(nodePlugin.diagnostics.length, 0);
   assert.equal(firebasePlugin.diagnostics.length, 0);
@@ -128,5 +128,47 @@ test("does not emit top-level execution-missing when the target layer itself has
   assert.equal(
     plan.diagnostics.some((diagnostic) => diagnostic.code === "execution-missing"),
     false,
+  );
+});
+
+test("materializes deploy local-01 with workspace steps and per-artifact local installs", async () => {
+  const repoRoot = path.join(fixturesRoot, "repo-deploy");
+  const discovery = await discoverEnvRepo(repoRoot);
+  const repoModel = buildRepoModel(discovery);
+  const plan = resolvePlan(repoModel, "local-01", "deploy");
+
+  assert.equal(plan.kind, "deploy");
+  assert.equal(plan.requestedTarget, "local-01");
+  assert.equal(plan.resolvedTarget, "local-01");
+  assert.equal(plan.repoExecutions.length, 2);
+  assert.deepEqual(plan.repoExecutions[0]?.execution?.args, ["install"]);
+  assert.deepEqual(plan.repoExecutions[1]?.execution?.args, ["-r", "--filter", "./artifacts/*", "build"]);
+  assert.equal(plan.artifactExecutions.filter((entry) => entry.status === "runnable").length, 2);
+  assert.ok(
+    plan.artifactExecutions.some(
+      (entry) =>
+        entry.runnerName === "envheaven-package-local-01" &&
+        entry.execution?.args[0] === "install" &&
+        entry.execution?.args[2] === path.resolve(repoRoot, "artifacts/envheaven-pkg-01"),
+    ),
+  );
+});
+
+test("materializes deploy production-01 with npm auth and scoped public publish", async () => {
+  const repoRoot = path.join(fixturesRoot, "repo-deploy");
+  const discovery = await discoverEnvRepo(repoRoot);
+  const repoModel = buildRepoModel(discovery);
+  const plan = resolvePlan(repoModel, "production-01", "deploy");
+
+  assert.equal(plan.kind, "deploy");
+  assert.equal(plan.repoExecutions.length, 3);
+  assert.deepEqual(plan.repoExecutions[2]?.execution?.args, ["whoami"]);
+  assert.ok(
+    plan.artifactExecutions.some(
+      (entry) =>
+        entry.runnerName === "envheaven-plugin-nodejs-pnpm-production-01" &&
+        entry.execution?.args.includes("--access") &&
+        entry.execution?.args.includes("public"),
+    ),
   );
 });

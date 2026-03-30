@@ -6,7 +6,16 @@ import type { Diagnostic, EnvRepoFile, RepoDiscoveryResult } from "../types";
 
 const ENV_DIR_NAME = ".envheaven";
 const FILE_SUFFIX = ".envheaven.env-map-layer.json";
-const SKIPPED_DIRECTORIES = new Set([".git", "node_modules", "dist"]);
+const SKIPPED_DIRECTORIES = new Set([
+  ".git",
+  "node_modules",
+  "dist",
+  "coverage",
+  "test",
+  "tests",
+  "__tests__",
+  "fixtures",
+]);
 
 export async function discoverEnvRepo(rootDirectory: string): Promise<RepoDiscoveryResult> {
   const envDirectories = await findEnvDirectories(rootDirectory);
