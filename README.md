@@ -50,6 +50,8 @@ Running a supported `run` intent resolves the repo, loads the plugin declared in
 
 Running a supported `deploy` intent materializes repo-level deploy steps and per-artifact distributor executions, then executes them sequentially. The current deploy support is intentionally narrow and targets EnvHeaven-style package monorepos that define `RepoDeployExecutions` and `ArtifactsDistributors`.
 
+On Windows, direct `pnpm` and `npm` deploy steps run natively in the Windows host environment for the package-monorepo workflow. Other commands still follow the existing WSL delegation path in v0.1.0.
+
 The CLI prints a JSON payload containing parsed intent, resolved plan, execution details, and severity-tagged diagnostics.
 
 ## Minimal Env-Repo Shape
@@ -243,8 +245,8 @@ Daemon startup:
 
 ## Limitations
 
-- Windows execution is delegated through `wsl` in v0.1.0.
+- Windows deploy steps that invoke `pnpm` or `npm` are executed natively, while other commands still use the existing `wsl` delegation path in v0.1.0.
 - The resolver is intentionally conservative and only understands a small subset of the env-map model.
 - Unsupported condition types are hard errors.
 - Missing optional fallback layers are reported as info-level diagnostics and do not stop the repo from loading.
-- The daemon is inspection-only and does not execute plans.
+- The daemon landing page is minimal and the daemon does not execute plans.

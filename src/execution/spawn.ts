@@ -2,7 +2,13 @@ import { spawn } from "node:child_process";
 import type { SpawnRequest, SpawnResult } from "../types";
 
 export async function spawnExecution(request: SpawnRequest): Promise<SpawnResult> {
-  return process.platform === "win32" ? spawnViaWsl(request) : spawnDirectly(request);
+  if (process.platform !== "win32") {
+    return await spawnDirectly(request);
+  }
+
+  return shouldUseNativeWindowsSpawn(request.command)
+    ? await spawnDirectly(request)
+    : await spawnViaWsl(request);
 }
 
 async function spawnDirectly(request: SpawnRequest): Promise<SpawnResult> {
@@ -39,4 +45,9 @@ async function spawnChild(
       });
     });
   });
+}
+
+function shouldUseNativeWindowsSpawn(command: string): boolean {
+  const normalizedCommand = command.trim().toLowerCase();
+  return normalizedCommand === "pnpm" || normalizedCommand === "pnpm.cmd" || normalizedCommand === "npm" || normalizedCommand === "npm.cmd";
 }

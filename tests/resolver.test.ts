@@ -142,7 +142,7 @@ test("materializes deploy local-01 with workspace steps and per-artifact local i
   assert.equal(plan.resolvedTarget, "local-01");
   assert.equal(plan.repoExecutions.length, 2);
   assert.deepEqual(plan.repoExecutions[0]?.execution?.args, ["install"]);
-  assert.deepEqual(plan.repoExecutions[1]?.execution?.args, ["-r", "--filter", "./artifacts/*", "build"]);
+  assert.deepEqual(plan.repoExecutions[1]?.execution?.args, ["-r", "--if-present", "run", "build"]);
   assert.equal(plan.artifactExecutions.filter((entry) => entry.status === "runnable").length, 2);
   assert.ok(
     plan.artifactExecutions.some(
@@ -162,6 +162,7 @@ test("materializes deploy production-01 with npm auth and scoped public publish"
 
   assert.equal(plan.kind, "deploy");
   assert.equal(plan.repoExecutions.length, 3);
+  assert.deepEqual(plan.repoExecutions[1]?.execution?.args, ["-r", "--if-present", "run", "build"]);
   assert.deepEqual(plan.repoExecutions[2]?.execution?.args, ["whoami"]);
   assert.ok(
     plan.artifactExecutions.some(

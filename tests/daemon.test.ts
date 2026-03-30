@@ -12,18 +12,23 @@ test("serves discovery, plugin status, and plan endpoints", async () => {
   const port = typeof address === "object" && address ? address.port : 0;
 
   try {
+    const rootResponse = await fetch(`http://127.0.0.1:${port}/`);
     const discoveryResponse = await fetch(`http://127.0.0.1:${port}/repo/discovery`);
     const pluginResponse = await fetch(`http://127.0.0.1:${port}/plugin/status`);
     const planResponse = await fetch(`http://127.0.0.1:${port}/plans/local`);
 
+    assert.equal(rootResponse.status, 200);
     assert.equal(discoveryResponse.status, 200);
     assert.equal(pluginResponse.status, 200);
     assert.equal(planResponse.status, 200);
 
+    const rootPayload = await rootResponse.text();
     const discoveryPayload = (await discoveryResponse.json()) as { files: unknown[] };
     const pluginPayload = (await pluginResponse.json()) as { targets: unknown[] };
     const planPayload = (await planResponse.json()) as { requestedTarget: string; resolvedTarget: string; diagnostics: unknown[] };
 
+    assert.match(rootPayload, /EnvHeaven Daemon/);
+    assert.match(rootPayload, /\/repo\/discovery/);
     assert.equal(discoveryPayload.files.length > 0, true);
     assert.equal(pluginPayload.targets.length, 5);
     assert.equal(planPayload.requestedTarget, "local");
