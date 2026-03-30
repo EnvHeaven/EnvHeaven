@@ -1,24 +1,40 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildSpawnEnv, resolveCommandForPlatform } from "../src/execution/spawn";
+import { buildSpawnEnv, buildSpawnPlan } from "../src/execution/spawn";
 
-test("Windows + pnpm resolves to pnpm.cmd", () => {
-  assert.equal(resolveCommandForPlatform("pnpm", "win32"), "pnpm.cmd");
+test("Windows package-manager commands are wrapped through cmd.exe", () => {
+  const plan = buildSpawnPlan(
+    {
+      command: "pnpm",
+      args: ["install"],
+      env: {},
+      cwd: "D:\\repo",
+    },
+    "win32",
+  );
+
+  assert.equal(plan.command, "cmd.exe");
+  assert.deepEqual(plan.args, ["/d", "/s", "/c", "pnpm install"]);
+  assert.equal(plan.windowsCommandWrappingUsed, true);
 });
 
-test("Windows + npm resolves to npm.cmd", () => {
-  assert.equal(resolveCommandForPlatform("npm", "win32"), "npm.cmd");
+test("Linux package-manager commands remain direct", () => {
+  const plan = buildSpawnPlan(
+    {
+      command: "pnpm",
+      args: ["install"],
+      env: {},
+      cwd: "/repo",
+    },
+    "linux",
+  );
+
+  assert.equal(plan.command, "pnpm");
+  assert.deepEqual(plan.args, ["install"]);
+  assert.equal(plan.windowsCommandWrappingUsed, false);
 });
 
-test("Linux + pnpm stays pnpm", () => {
-  assert.equal(resolveCommandForPlatform("pnpm", "linux"), "pnpm");
-});
-
-test("Linux + npm stays npm", () => {
-  assert.equal(resolveCommandForPlatform("npm", "linux"), "npm");
-});
-
-test("child process env inherits PATH correctly on Windows", () => {
+test("child process env inherits PATH correctly", () => {
   const mergedEnv = buildSpawnEnv(
     {
       Path: "C:\\Windows\\System32",
@@ -35,4 +51,46 @@ test("child process env inherits PATH correctly on Windows", () => {
   assert.equal(mergedEnv.PATH, undefined);
   assert.equal(mergedEnv.HOME, "C:\\Users\\tester");
   assert.equal(mergedEnv.EH_TARGET, "local-01");
+});
+
+test("Windows pnpm install command line is generated correctly", () => {
+  const plan = buildSpawnPlan(
+    {
+      command: "pnpm",
+      args: ["install"],
+      env: {},
+      cwd: "D:\\repo",
+    },
+    "win32",
+  );
+
+  assert.deepEqual(plan.args, ["/d", "/s", "/c", "pnpm install"]);
+});
+
+test("Windows recursive pnpm build command line is generated correctly", () => {
+  const plan = buildSpawnPlan(
+    {
+      command: "pnpm",
+      args: ["-r", "--if-present", "run", "build"],
+      env: {},
+      cwd: "D:\\repo",
+    },
+    "win32",
+  );
+
+  assert.deepEqual(plan.args, ["/d", "/s", "/c", "pnpm -r --if-present run build"]);
+});
+
+test("Windows global npm install command line is generated correctly", () => {
+  const plan = buildSpawnPlan(
+    {
+      command: "npm",
+      args: ["install", "--global", "D:\\repo path\\artifacts\\envheaven-pkg-01"],
+      env: {},
+      cwd: "D:\\repo",
+    },
+    "win32",
+  );
+
+  assert.deepEqual(plan.args, ["/d", "/s", "/c", "npm install --global \"D:\\repo path\\artifacts\\envheaven-pkg-01\""]);
 });

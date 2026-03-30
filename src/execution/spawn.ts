@@ -2,23 +2,17 @@ import { spawn } from "node:child_process";
 import type { SpawnRequest, SpawnResult } from "../types";
 
 export async function spawnExecution(request: SpawnRequest): Promise<SpawnResult> {
-  if (process.platform !== "win32") {
-    return await spawnDirectly(request);
-  }
-
-  return shouldUseNativeWindowsSpawn(request.command)
-    ? await spawnDirectly(request)
-    : await spawnViaWsl(request);
+  const spawnPlan = buildSpawnPlan(request, process.platform);
+  return await spawnChild(spawnPlan.command, spawnPlan.args, request.env, request.cwd, spawnPlan.windowsCommandWrappingUsed);
 }
 
-async function spawnDirectly(request: SpawnRequest): Promise<SpawnResult> {
-  return await spawnChild(resolveCommandForPlatform(request.command, process.platform), request.args, request.env, request.cwd);
-}
-
-async function spawnViaWsl(request: SpawnRequest): Promise<SpawnResult> {
+function buildWslSpawnPlan(request: SpawnRequest): SpawnPlan {
   const envArguments = Object.entries(request.env).flatMap(([key, value]) => ["env", `${key}=${value}`]);
-  const args = [...envArguments, request.command, ...request.args];
-  return await spawnChild("wsl", args, {}, request.cwd);
+  return {
+    command: "wsl",
+    args: [...envArguments, request.command, ...request.args],
+    windowsCommandWrappingUsed: false,
+  };
 }
 
 async function spawnChild(
@@ -26,16 +20,25 @@ async function spawnChild(
   args: string[],
   env: Record<string, string>,
   cwd?: string,
+  windowsCommandWrappingUsed = false,
 ): Promise<SpawnResult> {
   return await new Promise<SpawnResult>((resolve, reject) => {
     const child = spawn(command, args, {
       cwd,
       env: buildSpawnEnv(process.env, env, process.platform),
       stdio: "inherit",
+      shell: false,
     });
 
-    child.on("error", reject);
+    child.on("error", (error) => {
+      logChildProcessDebug("spawn-error", child, command, args, cwd, windowsCommandWrappingUsed, error);
+      reject(error);
+    });
     child.on("close", (exitCode, signal) => {
+      if ((exitCode ?? 1) !== 0 || signal) {
+        logChildProcessDebug("spawn-close", child, command, args, cwd, windowsCommandWrappingUsed);
+      }
+
       resolve({
         exitCode: exitCode ?? 1,
         signal,
@@ -49,22 +52,24 @@ function shouldUseNativeWindowsSpawn(command: string): boolean {
   return normalizedCommand === "pnpm" || normalizedCommand === "pnpm.cmd" || normalizedCommand === "npm" || normalizedCommand === "npm.cmd";
 }
 
-export function resolveCommandForPlatform(command: string, platform: NodeJS.Platform): string {
-  const normalizedCommand = command.trim().toLowerCase();
-
+export function buildSpawnPlan(request: SpawnRequest, platform: NodeJS.Platform): SpawnPlan {
   if (platform !== "win32") {
-    return command;
+    return {
+      command: request.command,
+      args: request.args,
+      windowsCommandWrappingUsed: false,
+    };
   }
 
-  if (normalizedCommand === "pnpm") {
-    return "pnpm.cmd";
+  if (shouldUseNativeWindowsSpawn(request.command)) {
+    return {
+      command: "cmd.exe",
+      args: ["/d", "/s", "/c", buildWindowsCommandLine(request.command, request.args)],
+      windowsCommandWrappingUsed: true,
+    };
   }
 
-  if (normalizedCommand === "npm") {
-    return "npm.cmd";
-  }
-
-  return command;
+  return buildWslSpawnPlan(request);
 }
 
 export function buildSpawnEnv(
@@ -85,4 +90,58 @@ export function buildSpawnEnv(
   }
 
   return mergedEnv;
+}
+
+export function buildWindowsCommandLine(command: string, args: string[]): string {
+  return [command, ...args.map((arg) => quoteWindowsArgument(arg))].join(" ");
+}
+
+function quoteWindowsArgument(value: string): string {
+  if (value.length === 0) {
+    return "\"\"";
+  }
+
+  if (!/[ \t"&()^[\]{}=;!'+,`~]/.test(value)) {
+    return value;
+  }
+
+  return `"${value.replace(/"/g, '\\"')}"`;
+}
+
+function shouldLogChildProcessDebug(): boolean {
+  return process.env.EH_DEBUG_CHILD_PROCESS === "1" || process.env.ENVHEAVEN_DEBUG_CHILD_PROCESS === "1";
+}
+
+function logChildProcessDebug(
+  phase: "spawn-error" | "spawn-close",
+  child: ReturnType<typeof spawn>,
+  command: string,
+  args: string[],
+  cwd: string | undefined,
+  windowsCommandWrappingUsed: boolean,
+  error?: Error,
+): void {
+  if (!shouldLogChildProcessDebug()) {
+    return;
+  }
+
+  const payload = {
+    phase,
+    platform: process.platform,
+    spawnExecutable: command,
+    spawnArgs: args,
+    cwd,
+    windowsCommandWrappingUsed,
+    spawnfile: child.spawnfile,
+    spawnargs: child.spawnargs,
+    error: error ? { message: error.message, name: error.name } : undefined,
+  };
+
+  console.error("[envheaven child-process debug]", JSON.stringify(payload, null, 2));
+}
+
+export interface SpawnPlan {
+  command: string;
+  args: string[];
+  windowsCommandWrappingUsed: boolean;
 }
