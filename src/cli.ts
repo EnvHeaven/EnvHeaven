@@ -108,6 +108,18 @@ async function main(): Promise<void> {
     spawnExecution,
   };
 
+  if (intent.kind === "run") {
+    const selection = resolveArtifactSelection(plan.artifactExecutions, intent.artifactSelectors ?? []);
+    diagnostics.push(...selection.diagnostics);
+    if (!hasErrors(diagnostics)) {
+      plan.selectedArtifacts = selection.artifactNames;
+      plan.artifactExecutions = plan.artifactExecutions.filter((entry) => selection.artifactNames.includes(entry.artifactName));
+      plan.execution =
+        plan.artifactExecutions.find((artifactExecution) => artifactExecution.status === "runnable")?.execution ?? null;
+      plan.pluginPackage = plan.execution?.pluginPackage;
+    }
+  }
+
   if (intent.kind === "deploy") {
     const selection = resolveArtifactSelection(plan.artifactExecutions, intent.artifactSelectors ?? []);
     diagnostics.push(...selection.diagnostics);

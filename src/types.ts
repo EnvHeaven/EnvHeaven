@@ -20,6 +20,10 @@ export type SupportedTarget =
   | "default"
   | "local"
   | "local-01"
+  | "development"
+  | "development-01"
+  | "beta"
+  | "beta-01"
   | "production-01"
   | "fake-local"
   | "fake-local-01";

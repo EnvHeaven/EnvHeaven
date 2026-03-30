@@ -119,6 +119,8 @@ export async function startDaemon(
             "envheaven",
             "envheaven offiline-web-ui",
             "envheaven deploy local",
+            "envheaven deploy development",
+            "envheaven deploy beta",
             "envheaven deploy production",
           ],
           features: [
@@ -351,7 +353,7 @@ function buildLandingPage(): string {
       <li><a href="/plans/fake-local">/plans/fake-local</a></li>
       <li><a href="/plans/fake-local-01">/plans/fake-local-01</a></li>
     </ul>
-    <p>Use <code>envheaven deploy local</code> or <code>envheaven deploy production</code> from the repo root for deploy workflows.</p>
+    <p>Use <code>envheaven deploy local</code>, <code>envheaven deploy development</code>, <code>envheaven deploy beta</code>, or <code>envheaven deploy production</code> from the repo root for deploy workflows.</p>
   </body>
 </html>`;
 }

@@ -62,6 +62,8 @@ test("serves status, repo list, and version registry endpoints", async () => {
 
     assert.equal(statusPayload.ok, true);
     assert.ok(statusPayload.commands.includes("envheaven offiline-web-ui"));
+    assert.ok(statusPayload.commands.includes("envheaven deploy development"));
+    assert.ok(statusPayload.commands.includes("envheaven deploy beta"));
     assert.ok(reposPayload.repos.some((repo) => repo.repoRoot === repoRoot));
     assert.ok(
       versionsPayload.versions.some((entry) => entry.artifactName === "envheaven-plugin-offiline-web-ui-01"),

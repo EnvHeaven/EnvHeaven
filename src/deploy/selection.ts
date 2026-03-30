@@ -36,7 +36,7 @@ export function resolveArtifactSelection(
 
     if (uniqueArtifactNames.length === 0) {
       diagnostics.push(
-        createDiagnostic("error", "artifact-selector-not-found", `Artifact selector "${selector}" did not match any deployable artifact.`),
+        createDiagnostic("error", "artifact-selector-not-found", `Artifact selector "${selector}" did not match any known artifact.`),
       );
       continue;
     }

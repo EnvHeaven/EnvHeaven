@@ -13,6 +13,10 @@ const RUN_TARGET_KEYWORDS = new Set([
 const DEPLOY_TARGET_KEYWORDS = new Set([
   "local",
   "local-01",
+  "development",
+  "development-01",
+  "beta",
+  "beta-01",
   "production",
   "production-01",
 ]);
@@ -22,7 +26,7 @@ const SPECIAL_COMMAND_KEYWORDS = new Set([
   "offline-web-ui",
 ]);
 
-const HARD_REJECT_KEYWORDS = new Set(["last", "development"]);
+const HARD_REJECT_KEYWORDS = new Set(["last"]);
 
 export function inferCommandIntent(args: string[]): {
   intent: CommandIntent | null;
@@ -116,21 +120,8 @@ export function inferCommandIntent(args: string[]): {
 
   if (runCount === 1) {
     const targetTokens = normalizedTokens.filter((token) => token !== "run");
-    if (!targetTokens.every((token) => RUN_TARGET_KEYWORDS.has(token))) {
-      return {
-        intent: null,
-        diagnostics: [
-          createDiagnostic(
-            "error",
-            "unsupported-command-shape",
-            `Unsupported or ambiguous run target: "${targetTokens.join(" ")}".`,
-          ),
-        ],
-      };
-    }
-
-    const target = parseSupportedRunTarget(targetTokens);
-    if (!target) {
+    const parsedRun = parseSupportedRunTarget(targetTokens);
+    if (!parsedRun) {
       return {
         intent: null,
         diagnostics: [
@@ -146,9 +137,10 @@ export function inferCommandIntent(args: string[]): {
     return {
       intent: {
         kind: "run",
-        target,
+        target: parsedRun.target,
         rawArgs: args,
         normalizedTokens,
+        artifactSelectors: parsedRun.artifactSelectors,
       },
       diagnostics: [],
     };
@@ -182,27 +174,39 @@ export function inferCommandIntent(args: string[]): {
   };
 }
 
-function parseSupportedRunTarget(tokens: string[]): SupportedTarget | null {
-  if (tokens.length === 1) {
-    switch (tokens[0]) {
+function parseSupportedRunTarget(tokens: string[]): { target: SupportedTarget; artifactSelectors: string[] } | null {
+  const targetTokens = tokens.filter((token) => RUN_TARGET_KEYWORDS.has(token));
+  const artifactSelectors = tokens.filter((token) => !RUN_TARGET_KEYWORDS.has(token));
+
+  if (targetTokens.length === 1) {
+    switch (targetTokens[0]) {
       case "default":
       case "local":
       case "local-01":
       case "fake-local":
       case "fake-local-01":
-        return tokens[0];
+        return {
+          target: targetTokens[0],
+          artifactSelectors,
+        };
       default:
         return null;
     }
   }
 
-  if (tokens.length === 2 && tokens[0] === "fake") {
-    if (tokens[1] === "local") {
-      return "fake-local";
+  if (targetTokens.length === 2 && targetTokens.includes("fake")) {
+    if (targetTokens.includes("local")) {
+      return {
+        target: "fake-local",
+        artifactSelectors,
+      };
     }
 
-    if (tokens[1] === "local-01") {
-      return "fake-local-01";
+    if (targetTokens.includes("local-01")) {
+      return {
+        target: "fake-local-01",
+        artifactSelectors,
+      };
     }
   }
 
@@ -220,6 +224,20 @@ function parseSupportedDeployTarget(tokens: string[]): { target: SupportedTarget
   if (targetTokens[0] === "local" || targetTokens[0] === "local-01") {
     return {
       target: "local-01",
+      artifactSelectors,
+    };
+  }
+
+  if (targetTokens[0] === "development" || targetTokens[0] === "development-01") {
+    return {
+      target: "development-01",
+      artifactSelectors,
+    };
+  }
+
+  if (targetTokens[0] === "beta" || targetTokens[0] === "beta-01") {
+    return {
+      target: "beta-01",
       artifactSelectors,
     };
   }
