@@ -54,8 +54,9 @@ export interface ExecutionSpec {
 }
 
 export interface ResolvedPlan {
-  target: SupportedTarget;
-  canonicalTarget: string;
+  requestedTarget: SupportedTarget;
+  resolvedTarget: string;
+  targetResolutionTrace: string[];
   mergeOrder: string[];
   diagnostics: Diagnostic[];
   trace: MergeTraceEntry[];

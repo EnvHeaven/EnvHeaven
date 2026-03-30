@@ -14,8 +14,9 @@ const ALLOWED_CONDITION_TYPES = new Set(["always-force", "only-if-full-setup-com
 export function resolvePlan(repoModel: RepoModel, target: SupportedTarget): ResolvedPlan {
   const diagnostics: Diagnostic[] = [...repoModel.diagnostics];
   const trace: MergeTraceEntry[] = [];
-  const canonicalTarget = resolveAlias(repoModel, target, diagnostics);
-  const mergeOrder = buildMergeOrder(repoModel, canonicalTarget, diagnostics);
+  const initialTarget = resolveAlias(repoModel, target, diagnostics);
+  const targetResolution = resolveConcreteTarget(repoModel, initialTarget, diagnostics);
+  const mergeOrder = buildMergeOrder(repoModel, targetResolution.resolvedTarget, diagnostics);
   const resolvedModel: Record<string, unknown> = {};
 
   for (const layerName of mergeOrder) {
@@ -33,8 +34,9 @@ export function resolvePlan(repoModel: RepoModel, target: SupportedTarget): Reso
   const pluginPackage = execution?.pluginPackage;
 
   return {
-    target,
-    canonicalTarget,
+    requestedTarget: target,
+    resolvedTarget: targetResolution.resolvedTarget,
+    targetResolutionTrace: targetResolution.trace,
     mergeOrder,
     diagnostics,
     trace,
@@ -42,6 +44,48 @@ export function resolvePlan(repoModel: RepoModel, target: SupportedTarget): Reso
     pluginPackage,
     resolvedModel,
   };
+}
+
+function resolveConcreteTarget(
+  repoModel: RepoModel,
+  target: string,
+  diagnostics: Diagnostic[],
+): { resolvedTarget: string; trace: string[] } {
+  const seen = new Set<string>();
+  const trace: string[] = [target];
+  let current = target;
+
+  while (true) {
+    if (seen.has(current)) {
+      diagnostics.push(
+        createDiagnostic("error", "target-cycle", `TargetName cycle detected at "${current}".`),
+      );
+      return {
+        resolvedTarget: current,
+        trace,
+      };
+    }
+
+    seen.add(current);
+    const layerValue = repoModel.envMapLayers[current];
+    if (!layerValue) {
+      return {
+        resolvedTarget: current,
+        trace,
+      };
+    }
+
+    if (!(layerValue.Type === "fallback-list" && typeof layerValue.TargetName === "string")) {
+      return {
+        resolvedTarget: current,
+        trace,
+      };
+    }
+
+    const nextTarget = resolveAlias(repoModel, layerValue.TargetName, diagnostics);
+    trace.push(nextTarget);
+    current = nextTarget;
+  }
 }
 
 function resolveAlias(repoModel: RepoModel, target: string, diagnostics: Diagnostic[]): string {
@@ -67,7 +111,11 @@ function buildMergeOrder(repoModel: RepoModel, target: string, diagnostics: Diag
   const visited = new Set<string>();
 
   const visit = (layerName: string) => {
-    const canonicalName = resolveAlias(repoModel, layerName, diagnostics);
+    const canonicalName = resolveConcreteTarget(
+      repoModel,
+      resolveAlias(repoModel, layerName, diagnostics),
+      diagnostics,
+    ).resolvedTarget;
 
     if (visited.has(canonicalName)) {
       return;
@@ -130,6 +178,14 @@ function mergeIntoResolvedModel(
 ): void {
   for (const [key, value] of Object.entries(source)) {
     const propertyPath = prefix ? `${prefix}.${key}` : key;
+    if (key === "RunCommand" && "Execution" in target) {
+      delete target.Execution;
+    }
+
+    if (key === "Execution" && "RunCommand" in target) {
+      delete target.RunCommand;
+    }
+
     const existing = target[key];
 
     if (isRecord(existing) && isRecord(value)) {

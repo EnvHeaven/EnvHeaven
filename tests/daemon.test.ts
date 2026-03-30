@@ -22,11 +22,12 @@ test("serves discovery, plugin status, and plan endpoints", async () => {
 
     const discoveryPayload = (await discoveryResponse.json()) as { files: unknown[] };
     const pluginPayload = (await pluginResponse.json()) as { targets: unknown[] };
-    const planPayload = (await planResponse.json()) as { target: string; diagnostics: unknown[] };
+    const planPayload = (await planResponse.json()) as { requestedTarget: string; resolvedTarget: string; diagnostics: unknown[] };
 
     assert.equal(discoveryPayload.files.length > 0, true);
     assert.equal(pluginPayload.targets.length, 5);
-    assert.equal(planPayload.target, "local");
+    assert.equal(planPayload.requestedTarget, "local");
+    assert.equal(planPayload.resolvedTarget, "local-01");
     assert.equal(Array.isArray(planPayload.diagnostics), true);
   } finally {
     await new Promise<void>((resolve, reject) => {

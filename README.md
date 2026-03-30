@@ -54,13 +54,15 @@ Running a supported `run` intent resolves the repo, loads the plugin declared in
 
 Each resolved target should expose `Execution` or `RunCommand`. `RunCommand` is normalized into `Execution` only for planning/execution.
 
+`Type: "fallback-list"` layers may point at another layer through `TargetName`. v0.1.0 now dereferences that chain recursively before merge resolution and reports `requestedTarget`, `resolvedTarget`, `targetResolutionTrace`, `mergeOrder`, and `trace` in the resolved plan.
+
 ```jsonc
 {
   "fallback-list": ["local-user-overrides-01"],
   "EnvMapLayers": {
     "default": {
       "Execution": {
-        "pluginPackage": "your-envheaven-plugin",
+        "pluginPackage": "@envheaven/plugins-nodejs-pnpm",
         "command": "node",
         "args": ["script.js"],
         "env": {
@@ -70,8 +72,13 @@ Each resolved target should expose `Execution` or `RunCommand`. `RunCommand` is 
       }
     },
     "local": {
+      "Type": "fallback-list",
+      "TargetName": "local-01"
+    },
+    "local-01": {
       "fallback-list": ["default"],
       "Execution": {
+        "pluginPackage": "@envheaven/plugins-nodejs-pnpm",
         "args": ["local-script.js"]
       }
     }
@@ -82,6 +89,11 @@ Each resolved target should expose `Execution` or `RunCommand`. `RunCommand` is 
 ## Plugin Contract
 
 Plugins are loaded by package name through normal Node module resolution from the inspected env-repo root. A plugin should export `inspect(context)` and/or `execute(plan, context)`.
+
+Known valid package names in the v0.1.0 examples:
+
+- `@envheaven/plugins-nodejs-pnpm`
+- `@envheaven/plugins-firebase-hosting-deploy`
 
 ```ts
 import type {
@@ -111,7 +123,9 @@ export const plugin: EnvHeavenPlugin = {
     return {
       exitCode: result.exitCode,
       details: {
-        signal: result.signal
+        signal: result.signal,
+        requestedTarget: plan.requestedTarget,
+        resolvedTarget: plan.resolvedTarget
       }
     };
   }
@@ -141,8 +155,10 @@ The daemon uses Node's built-in `http` module and exposes read-only JSON endpoin
     "target": "local"
   },
   "plan": {
-    "target": "local",
-    "mergeOrder": ["default", "local"]
+    "requestedTarget": "local",
+    "resolvedTarget": "local-01",
+    "targetResolutionTrace": ["local", "local-01"],
+    "mergeOrder": ["default", "local-01"]
   },
   "execution": {
     "exitCode": 0

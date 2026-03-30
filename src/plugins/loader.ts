@@ -3,8 +3,24 @@ import path from "node:path";
 import { createDiagnostic } from "../diagnostics";
 import type { Diagnostic, EnvHeavenPlugin, LoadedPlugin } from "../types";
 
+const LEGACY_PACKAGE_RENAMES: Record<string, string> = {
+  "@envheaven/plugins/nodejs-pnpm": "@envheaven/plugins-nodejs-pnpm",
+  "@envheaven/plugins/firebase-hosting-deploy": "@envheaven/plugins-firebase-hosting-deploy",
+};
+
 export async function loadPlugin(packageName: string, repoRoot: string): Promise<LoadedPlugin> {
   const diagnostics: Diagnostic[] = [];
+  const packageValidation = validatePackageName(packageName);
+  if (packageValidation) {
+    diagnostics.push(packageValidation);
+    return {
+      packageName,
+      resolvedPath: "",
+      plugin: {},
+      diagnostics,
+    };
+  }
+
   const localRequire = createRequire(path.join(repoRoot, "package.json"));
 
   try {
@@ -46,6 +62,38 @@ export async function loadPlugin(packageName: string, repoRoot: string): Promise
       diagnostics,
     };
   }
+}
+
+function validatePackageName(packageName: string): Diagnostic | null {
+  const suggestedName = LEGACY_PACKAGE_RENAMES[packageName];
+  if (suggestedName) {
+    return createDiagnostic(
+      "error",
+      "plugin-package-name-invalid",
+      `Invalid plugin package name "${packageName}". Use "${suggestedName}" instead.`,
+    );
+  }
+
+  const slashCount = [...packageName].filter((character) => character === "/").length;
+  const isScoped = packageName.startsWith("@");
+  if ((isScoped && slashCount !== 1) || (!isScoped && slashCount !== 0)) {
+    return createDiagnostic(
+      "error",
+      "plugin-package-name-invalid",
+      `Invalid npm package name "${packageName}". Scoped packages must use "@scope/name".`,
+    );
+  }
+
+  const packageNamePattern = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+  if (!packageNamePattern.test(packageName)) {
+    return createDiagnostic(
+      "error",
+      "plugin-package-name-invalid",
+      `Invalid npm package name "${packageName}".`,
+    );
+  }
+
+  return null;
 }
 
 function normalizePlugin(imported: { default?: unknown } | EnvHeavenPlugin): EnvHeavenPlugin {
