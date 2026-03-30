@@ -12,7 +12,7 @@ export async function spawnExecution(request: SpawnRequest): Promise<SpawnResult
 }
 
 async function spawnDirectly(request: SpawnRequest): Promise<SpawnResult> {
-  return await spawnChild(request.command, request.args, request.env, request.cwd);
+  return await spawnChild(resolveCommandForPlatform(request.command, process.platform), request.args, request.env, request.cwd);
 }
 
 async function spawnViaWsl(request: SpawnRequest): Promise<SpawnResult> {
@@ -30,10 +30,7 @@ async function spawnChild(
   return await new Promise<SpawnResult>((resolve, reject) => {
     const child = spawn(command, args, {
       cwd,
-      env: {
-        ...process.env,
-        ...env,
-      },
+      env: buildSpawnEnv(process.env, env, process.platform),
       stdio: "inherit",
     });
 
@@ -50,4 +47,42 @@ async function spawnChild(
 function shouldUseNativeWindowsSpawn(command: string): boolean {
   const normalizedCommand = command.trim().toLowerCase();
   return normalizedCommand === "pnpm" || normalizedCommand === "pnpm.cmd" || normalizedCommand === "npm" || normalizedCommand === "npm.cmd";
+}
+
+export function resolveCommandForPlatform(command: string, platform: NodeJS.Platform): string {
+  const normalizedCommand = command.trim().toLowerCase();
+
+  if (platform !== "win32") {
+    return command;
+  }
+
+  if (normalizedCommand === "pnpm") {
+    return "pnpm.cmd";
+  }
+
+  if (normalizedCommand === "npm") {
+    return "npm.cmd";
+  }
+
+  return command;
+}
+
+export function buildSpawnEnv(
+  parentEnv: NodeJS.ProcessEnv,
+  extraEnv: Record<string, string>,
+  platform: NodeJS.Platform,
+): NodeJS.ProcessEnv {
+  const mergedEnv: NodeJS.ProcessEnv = { ...parentEnv };
+
+  for (const [key, value] of Object.entries(extraEnv)) {
+    if (platform !== "win32") {
+      mergedEnv[key] = value;
+      continue;
+    }
+
+    const existingKey = Object.keys(mergedEnv).find((candidate) => candidate.toLowerCase() === key.toLowerCase());
+    mergedEnv[existingKey ?? key] = value;
+  }
+
+  return mergedEnv;
 }
