@@ -1,6 +1,7 @@
 import path from "node:path";
 import { createDiagnostic, hasErrors } from "../diagnostics";
 import type {
+  ArtifactExecutionPlan,
   Diagnostic,
   ExecutionSpec,
   MergeTraceEntry,
@@ -30,8 +31,32 @@ export function resolvePlan(repoModel: RepoModel, target: SupportedTarget): Reso
   }
 
   validateConditionTypes(resolvedModel, diagnostics, []);
-  const execution = normalizeExecution(resolvedModel, repoModel.rootDirectory, diagnostics);
+  const artifactExecutions = materializeArtifactExecutions(
+    repoModel,
+    resolvedModel,
+    targetResolution.resolvedTarget,
+    diagnostics,
+  );
+  const execution = artifactExecutions.find((artifactExecution) => artifactExecution.status === "runnable")?.execution ?? null;
   const pluginPackage = execution?.pluginPackage;
+
+  if (!execution && artifactExecutions.length === 0) {
+    diagnostics.push(
+      createDiagnostic(
+        "error",
+        "execution-missing",
+        "No ArtifactsRunners were available to materialize runnable artifact executions.",
+      ),
+    );
+  } else if (!execution) {
+    diagnostics.push(
+      createDiagnostic(
+        "error",
+        "execution-missing",
+        "No runnable artifact executions remained after materialization.",
+      ),
+    );
+  }
 
   return {
     requestedTarget: target,
@@ -40,6 +65,7 @@ export function resolvePlan(repoModel: RepoModel, target: SupportedTarget): Reso
     mergeOrder,
     diagnostics,
     trace,
+    artifactExecutions,
     execution,
     pluginPackage,
     resolvedModel,
@@ -256,59 +282,13 @@ function validateConditionTypes(
   }
 }
 
-function normalizeExecution(
-  resolvedModel: Record<string, unknown>,
-  repoRoot: string,
-  diagnostics: Diagnostic[],
-): ExecutionSpec | null {
-  const executionRecord = normalizeExecutionRecord(resolvedModel);
-  if (!executionRecord) {
-    diagnostics.push(
-      createDiagnostic("error", "execution-missing", "Resolved target does not expose Execution or RunCommand."),
-    );
-    return null;
-  }
-
-  if (hasErrors(diagnostics)) {
-    return null;
-  }
-
-  const command = typeof executionRecord.command === "string" ? executionRecord.command : undefined;
-  if (!command) {
-    diagnostics.push(createDiagnostic("error", "execution-command-missing", "Execution.command is required."));
-    return null;
-  }
-
-  const cwdValue = typeof executionRecord.cwd === "string" ? executionRecord.cwd : undefined;
-  const args = Array.isArray(executionRecord.args)
-    ? executionRecord.args.filter((entry): entry is string => typeof entry === "string")
-    : [];
-  const env = normalizeStringMap(executionRecord.env);
-  const pluginPackage = readPluginPackage(executionRecord, resolvedModel);
-
-  if (!pluginPackage) {
-    diagnostics.push(
-      createDiagnostic("error", "plugin-package-missing", "Execution.pluginPackage is required in v0.1.0."),
-    );
-  }
-
-  return {
-    pluginPackage,
-    command,
-    args,
-    env,
-    cwd: cwdValue ? path.resolve(repoRoot, cwdValue) : repoRoot,
-    raw: executionRecord,
-  };
-}
-
-function normalizeExecutionRecord(resolvedModel: Record<string, unknown>): Record<string, unknown> | null {
-  const execution = resolvedModel.Execution;
+function normalizeExecutionRecord(value: Record<string, unknown>): Record<string, unknown> | null {
+  const execution = value.Execution;
   if (isRecord(execution)) {
     return { ...execution };
   }
 
-  const runCommand = resolvedModel.RunCommand;
+  const runCommand = value.RunCommand;
   if (typeof runCommand === "string") {
     return {
       command: runCommand,
@@ -334,7 +314,7 @@ function normalizeExecutionRecord(resolvedModel: Record<string, unknown>): Recor
 
 function readPluginPackage(
   executionRecord: Record<string, unknown>,
-  resolvedModel: Record<string, unknown>,
+  value: Record<string, unknown>,
 ): string | undefined {
   if (typeof executionRecord.pluginPackage === "string") {
     return executionRecord.pluginPackage;
@@ -344,11 +324,344 @@ function readPluginPackage(
     return executionRecord.plugin;
   }
 
-  if (typeof resolvedModel.PluginPackage === "string") {
-    return resolvedModel.PluginPackage;
+  if (typeof value.PluginPackage === "string") {
+    return value.PluginPackage;
   }
 
   return undefined;
+}
+
+function materializeArtifactExecutions(
+  repoModel: RepoModel,
+  resolvedModel: Record<string, unknown>,
+  resolvedTarget: string,
+  diagnostics: Diagnostic[],
+): ArtifactExecutionPlan[] {
+  const resolvedArtifacts = normalizeNamedRecords(resolvedModel.Artifacts);
+  const artifactExecutions: ArtifactExecutionPlan[] = [];
+  const blockedByPlanErrors = hasErrors(diagnostics);
+
+  for (const [runnerName, runnerValue] of Object.entries(repoModel.artifactsRunners)) {
+    const artifactDiagnostics: Diagnostic[] = [];
+    const materializationTrace = [`runner:${runnerName}`];
+    const artifactName = readArtifactName(runnerValue);
+
+    if (!artifactName) {
+      artifactDiagnostics.push(
+        createDiagnostic("warning", "artifact-runner-artifact-missing", `Runner "${runnerName}" does not declare ArtifactName.`),
+      );
+      artifactExecutions.push({
+        artifactName: "",
+        runnerName,
+        status: "partial",
+        diagnostics: artifactDiagnostics,
+        trace: materializationTrace,
+        execution: null,
+      });
+      continue;
+    }
+
+    materializationTrace.push(`artifact:${artifactName}`);
+    const baseArtifact = repoModel.artifacts[artifactName];
+    if (!baseArtifact) {
+      artifactDiagnostics.push(
+        createDiagnostic(
+          "warning",
+          "artifact-missing",
+          `Artifact "${artifactName}" referenced by runner "${runnerName}" was not found in repo-base Artifacts.`,
+        ),
+      );
+      artifactExecutions.push({
+        artifactName,
+        runnerName,
+        status: "partial",
+        diagnostics: artifactDiagnostics,
+        trace: materializationTrace,
+        execution: null,
+      });
+      continue;
+    }
+
+    const finalArtifact = deepMergeObjects(baseArtifact, resolvedArtifacts[artifactName] ?? {});
+    const templateContext = buildTemplateContext(finalArtifact, resolvedTarget, repoModel.rootDirectory);
+    const executionRecord = normalizeExecutionRecord(runnerValue);
+
+    if (!executionRecord) {
+      artifactDiagnostics.push(
+        createDiagnostic(
+          "warning",
+          "artifact-runner-execution-missing",
+          `Runner "${runnerName}" does not expose Execution or RunCommand.`,
+        ),
+      );
+      artifactExecutions.push({
+        artifactName,
+        runnerName,
+        status: "partial",
+        diagnostics: artifactDiagnostics,
+        trace: materializationTrace,
+        execution: null,
+      });
+      continue;
+    }
+
+    const materializedExecution = materializeExecutionRecord(
+      runnerName,
+      artifactName,
+      executionRecord,
+      runnerValue,
+      repoModel.rootDirectory,
+      templateContext,
+      blockedByPlanErrors,
+      artifactDiagnostics,
+      materializationTrace,
+    );
+
+    artifactExecutions.push({
+      artifactName,
+      runnerName,
+      status: materializedExecution ? "runnable" : "partial",
+      diagnostics: artifactDiagnostics,
+      trace: materializationTrace,
+      execution: materializedExecution,
+    });
+  }
+
+  diagnostics.push(...artifactExecutions.flatMap((artifactExecution) => artifactExecution.diagnostics));
+  return artifactExecutions;
+}
+
+function materializeExecutionRecord(
+  runnerName: string,
+  artifactName: string,
+  executionRecord: Record<string, unknown>,
+  runnerValue: Record<string, unknown>,
+  repoRoot: string,
+  templateContext: TemplateContext,
+  blockedByPlanErrors: boolean,
+  diagnostics: Diagnostic[],
+  trace: string[],
+): ExecutionSpec | null {
+  if (blockedByPlanErrors || hasErrors(diagnostics)) {
+    return null;
+  }
+
+  const command = materializeTemplateString(executionRecord.command, artifactName, templateContext, diagnostics, "command");
+  if (!command) {
+    diagnostics.push(
+      createDiagnostic("warning", "execution-command-missing", `Runner "${runnerName}" is missing Execution.command.`),
+    );
+    return null;
+  }
+
+  const args = materializeStringArray(executionRecord.args, artifactName, templateContext, diagnostics, "args");
+  const env = materializeStringMap(executionRecord.env, artifactName, templateContext, diagnostics, "env");
+  const cwdValue = materializeTemplateString(executionRecord.cwd, artifactName, templateContext, diagnostics, "cwd");
+  const pluginPackage = materializeTemplateString(
+    readPluginPackage(executionRecord, runnerValue),
+    artifactName,
+    templateContext,
+    diagnostics,
+    "pluginPackage",
+  );
+
+  if (!pluginPackage) {
+    diagnostics.push(
+      createDiagnostic(
+        "warning",
+        "plugin-package-missing",
+        `Runner "${runnerName}" is missing Execution.pluginPackage.`,
+      ),
+    );
+    return null;
+  }
+
+  trace.push(`command:${command}`);
+  return {
+    pluginPackage,
+    command,
+    args,
+    env,
+    cwd: cwdValue ? path.resolve(repoRoot, cwdValue) : repoRoot,
+    raw: executionRecord,
+  };
+}
+
+interface TemplateContext {
+  repoCloneFolderPath?: string;
+  port?: string;
+  envMapName: string;
+  envVarsJson: string;
+}
+
+function buildTemplateContext(
+  finalArtifact: Record<string, unknown>,
+  resolvedTarget: string,
+  repoRoot: string,
+): TemplateContext {
+  const rawRepoCloneFolderPath = readStringValue(finalArtifact, ["RepoCloneFolderPath", "repoCloneFolderPath"]);
+  const repoCloneFolderPath = rawRepoCloneFolderPath ? path.resolve(repoRoot, rawRepoCloneFolderPath) : undefined;
+  const port = readPortValue(finalArtifact);
+  const envMapName =
+    readStringValue(finalArtifact, ["EnvMapName", "envMapName"]) ??
+    resolvedTarget;
+  const envVars = normalizeStringMap(finalArtifact.EnvVars ?? finalArtifact.envVars);
+
+  return {
+    repoCloneFolderPath,
+    port,
+    envMapName,
+    envVarsJson: JSON.stringify(envVars),
+  };
+}
+
+function materializeTemplateString(
+  value: unknown,
+  artifactName: string,
+  templateContext: TemplateContext,
+  diagnostics: Diagnostic[],
+  fieldName: string,
+): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const replaced = value.replace(/\{\{\s*(GetFinalRepoCloneFolderPathOf|GetFinalPortOf|GetFinalEnvMapNameOf|GetFinalEnvVarsAsJson)\('([^']+)'\)\s*\}\}/g, (_match, templateName: string, templateArtifactName: string) => {
+    if (templateArtifactName !== artifactName) {
+      diagnostics.push(
+        createDiagnostic(
+          "warning",
+          "artifact-template-mismatch",
+          `Template references artifact "${templateArtifactName}" but runner is bound to "${artifactName}".`,
+        ),
+      );
+      return "";
+    }
+
+    switch (templateName) {
+      case "GetFinalRepoCloneFolderPathOf":
+        return templateContext.repoCloneFolderPath ?? "";
+      case "GetFinalPortOf":
+        return templateContext.port ?? "";
+      case "GetFinalEnvMapNameOf":
+        return templateContext.envMapName;
+      case "GetFinalEnvVarsAsJson":
+        return templateContext.envVarsJson;
+      default:
+        return "";
+    }
+  });
+
+  if (replaced.includes("{{") || replaced === "") {
+    if (value.includes("{{")) {
+      diagnostics.push(
+        createDiagnostic(
+          "warning",
+          "artifact-template-unresolved",
+          `Unable to resolve ${fieldName} template for artifact "${artifactName}".`,
+        ),
+      );
+    }
+  }
+
+  return replaced.length > 0 ? replaced : undefined;
+}
+
+function materializeStringArray(
+  value: unknown,
+  artifactName: string,
+  templateContext: TemplateContext,
+  diagnostics: Diagnostic[],
+  fieldName: string,
+): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((entry) => materializeTemplateString(entry, artifactName, templateContext, diagnostics, fieldName))
+    .filter((entry): entry is string => typeof entry === "string");
+}
+
+function materializeStringMap(
+  value: unknown,
+  artifactName: string,
+  templateContext: TemplateContext,
+  diagnostics: Diagnostic[],
+  fieldName: string,
+): Record<string, string> {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  const result: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const materializedValue = materializeTemplateString(entry, artifactName, templateContext, diagnostics, `${fieldName}.${key}`);
+    if (materializedValue !== undefined) {
+      result[key] = materializedValue;
+    }
+  }
+  return result;
+}
+
+function readArtifactName(value: Record<string, unknown>): string | undefined {
+  return readStringValue(value, ["ArtifactName", "artifactName"]);
+}
+
+function readStringValue(value: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    if (typeof value[key] === "string") {
+      return value[key] as string;
+    }
+  }
+
+  return undefined;
+}
+
+function readPortValue(value: Record<string, unknown>): string | undefined {
+  const rawValue = value.Port ?? value.port;
+  if (typeof rawValue === "number" || typeof rawValue === "string") {
+    return String(rawValue);
+  }
+
+  return undefined;
+}
+
+function normalizeNamedRecords(value: unknown): Record<string, Record<string, unknown>> {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  const result: Record<string, Record<string, unknown>> = {};
+  for (const [key, entryValue] of Object.entries(value)) {
+    if (isRecord(entryValue)) {
+      result[key] = deepClone(entryValue);
+    }
+  }
+  return result;
+}
+
+function deepMergeObjects(
+  base: Record<string, unknown>,
+  override: Record<string, unknown>,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(override)) {
+    const previous = result[key];
+    if (isRecord(previous) && isRecord(value)) {
+      result[key] = deepMergeObjects(previous, value);
+      continue;
+    }
+
+    if (Array.isArray(value)) {
+      result[key] = value.map((entry) => deepClone(entry));
+      continue;
+    }
+
+    result[key] = deepClone(value);
+  }
+
+  return result;
 }
 
 function normalizeStringArray(value: unknown): string[] {

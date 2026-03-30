@@ -33,6 +33,8 @@ export function buildRepoModel(discovery: RepoDiscoveryResult): RepoModel {
 
   const layers = orderedFiles.map(normalizeLayer);
   const envMapLayers: RepoModel["envMapLayers"] = {};
+  const artifacts = baseFile ? normalizeNamedRecords(baseFile.payload?.Artifacts) : {};
+  const artifactsRunners = baseFile ? normalizeNamedRecords(baseFile.payload?.ArtifactsRunners) : {};
   const aliases: RepoModel["aliases"] = {};
   const fallbackList: string[] = [];
 
@@ -69,11 +71,28 @@ export function buildRepoModel(discovery: RepoDiscoveryResult): RepoModel {
     rootDirectory: discovery.rootDirectory,
     layers,
     envMapLayers,
+    artifacts,
+    artifactsRunners,
     aliases,
     fallbackList,
     diagnostics,
     discovery,
   };
+}
+
+function normalizeNamedRecords(value: unknown): Record<string, Record<string, unknown>> {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  const result: Record<string, Record<string, unknown>> = {};
+  for (const [key, entryValue] of Object.entries(value)) {
+    if (isRecord(entryValue)) {
+      result[key] = deepCloneRecord(entryValue);
+    }
+  }
+
+  return result;
 }
 
 function normalizeLayer(file: EnvRepoFile): NormalizedLayer {

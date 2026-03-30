@@ -8,7 +8,7 @@ import { loadPlugin } from "../src/plugins/loader";
 
 const fixturesRoot = path.join(__dirname, "fixtures");
 
-test("builds a deterministic merge order with optional missing fallbacks", async () => {
+test("separates env layer resolution from artifact runner materialization", async () => {
   const repoRoot = path.join(fixturesRoot, "repo-basic");
   const discovery = await discoverEnvRepo(repoRoot);
   const repoModel = buildRepoModel(discovery);
@@ -18,13 +18,32 @@ test("builds a deterministic merge order with optional missing fallbacks", async
   assert.equal(plan.resolvedTarget, "local-01");
   assert.deepEqual(plan.targetResolutionTrace, ["local", "local-01"]);
   assert.deepEqual(plan.mergeOrder, ["default", "local-01"]);
-  assert.equal(plan.execution?.pluginPackage, "@envheaven/plugins-nodejs-pnpm");
-  assert.equal(plan.execution?.args[0], "local-01-script");
-  assert.ok(plan.trace.some((entry) => entry.propertyPath === "Execution.args"));
-  assert.ok(plan.diagnostics.some((diagnostic) => diagnostic.code === "optional-layer-missing"));
+  assert.equal(typeof plan.resolvedModel.Artifacts, "object");
+  assert.ok(!("Execution" in plan.resolvedModel));
+  assert.ok(!("RunCommand" in plan.resolvedModel));
 });
 
-test("resolves fake-local through TargetName to a concrete execution plan", async () => {
+test("materializes local-01 artifact execution plans through ArtifactsRunners", async () => {
+  const repoRoot = path.join(fixturesRoot, "repo-basic");
+  const discovery = await discoverEnvRepo(repoRoot);
+  const repoModel = buildRepoModel(discovery);
+  const plan = resolvePlan(repoModel, "local");
+
+  assert.equal(plan.execution?.pluginPackage, "@envheaven/plugin-nodejs-pnpm");
+  assert.equal(plan.execution?.command, "node");
+  assert.deepEqual(plan.execution?.args, [
+    "serve",
+    path.resolve(repoRoot, "repos/local/envheaven-type-this-01"),
+    "4101",
+  ]);
+  assert.equal(plan.execution?.cwd, path.resolve(repoRoot, "repos/local/envheaven-type-this-01"));
+  assert.equal(plan.execution?.env.EH_ENV_MAP_NAME, "local-01");
+  assert.match(plan.execution?.env.EH_ENV_VARS_JSON ?? "", /"EH_PROFILE":"local"/);
+  assert.ok(plan.artifactExecutions.some((artifactExecution) => artifactExecution.status === "runnable"));
+  assert.ok(plan.artifactExecutions.some((artifactExecution) => artifactExecution.status === "partial"));
+});
+
+test("materializes fake-local-01 artifact execution plans through ArtifactsRunners", async () => {
   const repoRoot = path.join(fixturesRoot, "repo-basic");
   const discovery = await discoverEnvRepo(repoRoot);
   const repoModel = buildRepoModel(discovery);
@@ -32,9 +51,14 @@ test("resolves fake-local through TargetName to a concrete execution plan", asyn
 
   assert.equal(plan.requestedTarget, "fake-local");
   assert.equal(plan.resolvedTarget, "fake-local-01");
-  assert.deepEqual(plan.targetResolutionTrace, ["fake-local", "fake-local-01"]);
-  assert.equal(plan.execution?.pluginPackage, "@envheaven/plugins-firebase-hosting-deploy");
-  assert.equal(plan.execution?.command, "node");
+  assert.equal(plan.execution?.pluginPackage, "@envheaven/plugin-nodejs-pnpm");
+  assert.equal(plan.artifactExecutions.length, 3);
+  const firebaseArtifact = plan.artifactExecutions.find(
+    (artifactExecution) => artifactExecution.runnerName === "firebase-hosting-secondary",
+  );
+  assert.equal(firebaseArtifact?.execution?.pluginPackage, "@envheaven/plugin-firebase-hosting-deploy");
+  assert.equal(firebaseArtifact?.execution?.args[1], "fake-local-01");
+  assert.match(firebaseArtifact?.execution?.env.EH_ENV_VARS_JSON ?? "", /"EH_PROFILE":"fake-local"/);
 });
 
 test("rejects unsupported conditions after TargetName dereferencing", async () => {
@@ -49,8 +73,8 @@ test("rejects unsupported conditions after TargetName dereferencing", async () =
 
 test("loads renamed scoped plugins from local fixture metadata", async () => {
   const repoRoot = path.join(fixturesRoot, "repo-basic");
-  const nodePlugin = await loadPlugin("@envheaven/plugins-nodejs-pnpm", repoRoot);
-  const firebasePlugin = await loadPlugin("@envheaven/plugins-firebase-hosting-deploy", repoRoot);
+  const nodePlugin = await loadPlugin("@envheaven/plugin-nodejs-pnpm", repoRoot);
+  const firebasePlugin = await loadPlugin("@envheaven/plugin-firebase-hosting-deploy", repoRoot);
 
   assert.equal(nodePlugin.diagnostics.length, 0);
   assert.equal(firebasePlugin.diagnostics.length, 0);
@@ -75,12 +99,34 @@ test("detects TargetName cycles", async () => {
   assert.ok(plan.diagnostics.some((diagnostic) => diagnostic.code === "target-cycle"));
 });
 
-test("produces a non-null execution plan for envheaven run local when concrete layer exists", async () => {
+test("keeps the plan partially runnable when one artifact runner is invalid", async () => {
+  const repoRoot = path.join(fixturesRoot, "repo-basic");
+  const discovery = await discoverEnvRepo(repoRoot);
+  const repoModel = buildRepoModel(discovery);
+  const plan = resolvePlan(repoModel, "local");
+
+  const brokenArtifact = plan.artifactExecutions.find(
+    (artifactExecution) => artifactExecution.runnerName === "broken-runner",
+  );
+  assert.equal(brokenArtifact?.status, "partial");
+  assert.equal(brokenArtifact?.execution, null);
+  assert.ok(brokenArtifact?.diagnostics.some((diagnostic) => diagnostic.code === "artifact-missing"));
+  assert.equal(plan.execution?.command, "node");
+  assert.equal(
+    plan.diagnostics.some((diagnostic) => diagnostic.code === "execution-missing"),
+    false,
+  );
+});
+
+test("does not emit top-level execution-missing when the target layer itself has no Execution", async () => {
   const repoRoot = path.join(fixturesRoot, "repo-basic");
   const discovery = await discoverEnvRepo(repoRoot);
   const repoModel = buildRepoModel(discovery);
   const plan = resolvePlan(repoModel, "local");
 
   assert.ok(plan.execution);
-  assert.equal(plan.execution?.command, "node");
+  assert.equal(
+    plan.diagnostics.some((diagnostic) => diagnostic.code === "execution-missing"),
+    false,
+  );
 });

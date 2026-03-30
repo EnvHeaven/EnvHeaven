@@ -53,6 +53,15 @@ export interface ExecutionSpec {
   raw?: Record<string, unknown>;
 }
 
+export interface ArtifactExecutionPlan {
+  artifactName: string;
+  runnerName: string;
+  status: "runnable" | "partial" | "blocked";
+  diagnostics: Diagnostic[];
+  trace: string[];
+  execution: ExecutionSpec | null;
+}
+
 export interface ResolvedPlan {
   requestedTarget: SupportedTarget;
   resolvedTarget: string;
@@ -60,6 +69,7 @@ export interface ResolvedPlan {
   mergeOrder: string[];
   diagnostics: Diagnostic[];
   trace: MergeTraceEntry[];
+  artifactExecutions: ArtifactExecutionPlan[];
   execution: ExecutionSpec | null;
   pluginPackage?: string;
   resolvedModel: Record<string, unknown>;
@@ -119,6 +129,8 @@ export interface RepoModel {
   rootDirectory: string;
   layers: NormalizedLayer[];
   envMapLayers: Record<string, Record<string, unknown>>;
+  artifacts: Record<string, Record<string, unknown>>;
+  artifactsRunners: Record<string, Record<string, unknown>>;
   aliases: Record<string, string[]>;
   fallbackList: string[];
   diagnostics: Diagnostic[];
