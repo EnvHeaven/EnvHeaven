@@ -21,7 +21,9 @@
   - `envheaven run fake local`
   - `envheaven run fake local-01`
   - `envheaven run fake-local-01`
+  - `envheaven deploy local`
   - `envheaven deploy local-01`
+  - `envheaven deploy production`
   - `envheaven deploy production-01`
   - `eh run local`
   - `eh default`

@@ -1,0 +1,14 @@
+# common/base repo env overrides
+!safe-env-map-layers/
+!safe-env-map-layers/base-repo-env-map-layers/
+!safe-env-map-layers/base-repo-env-map-layers/**
+
+# local user env overrides
+# (for development/testing/CI-CD purposes)
+secret-env-map-layers/*
+!secret-env-map-layers/base-repo-env-map-layers/
+secret-env-map-layers/base-repo-env-map-layers/*
+!secret-env-map-layers/base-repo-env-map-layers/.keep
+!secret-env-map-layers/local-user-env-map-layers/
+secret-env-map-layers/local-user-env-map-layers/*
+!secret-env-map-layers/local-user-env-map-layers/.keep

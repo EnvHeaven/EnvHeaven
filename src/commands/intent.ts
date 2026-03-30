@@ -7,6 +7,7 @@ const SUPPORTED_KEYWORDS = new Set([
   "default",
   "local",
   "local-01",
+  "production",
   "production-01",
   "fake",
   "fake-local",
@@ -189,8 +190,12 @@ function parseSupportedDeployTarget(tokens: string[]): SupportedTarget | null {
     return null;
   }
 
-  if (tokens[0] === "local-01" || tokens[0] === "production-01") {
-    return tokens[0];
+  if (tokens[0] === "local" || tokens[0] === "local-01") {
+    return "local-01";
+  }
+
+  if (tokens[0] === "production" || tokens[0] === "production-01") {
+    return "production-01";
   }
 
   return null;
