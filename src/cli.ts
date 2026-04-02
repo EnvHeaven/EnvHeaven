@@ -115,18 +115,8 @@ async function main(): Promise<void> {
       plan.selectedArtifacts = selection.artifactNames;
       plan.artifactExecutions = plan.artifactExecutions.filter((entry) => selection.artifactNames.includes(entry.artifactName));
       plan.execution =
-        plan.repoExecutions.find((repoExecution) => repoExecution.status === "runnable")?.execution ??
         plan.artifactExecutions.find((artifactExecution) => artifactExecution.status === "runnable")?.execution ?? null;
       plan.pluginPackage = plan.execution?.pluginPackage;
-    }
-
-    if (plan.repoExecutions.length > 0) {
-      const deployResults = await executeDeployPlan(plan, runtimeContext, diagnostics, stateStore);
-      writeJsonAndExit(
-        { intent, plan, deploy: deployResults.payload, diagnostics },
-        hasErrors(diagnostics) ? 1 : deployResults.exitCode,
-      );
-      return;
     }
   }
 

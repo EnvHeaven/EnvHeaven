@@ -36,22 +36,13 @@ export function resolvePlan(
   }
 
   validateConditionTypes(resolvedModel, diagnostics, []);
-
-  const isDeployStyleRunTarget =
-    kind === "run" &&
-    (target === "install-revert" ||
-      target === "install-revert-01" ||
-      targetResolution.resolvedTarget === "install-revert-01");
-
   const repoExecutions =
-    kind === "deploy" || isDeployStyleRunTarget
+    kind === "deploy"
       ? materializeRepoDeployExecutions(repoModel, targetResolution.resolvedTarget, diagnostics)
       : [];
   const artifactExecutions =
     kind === "deploy"
       ? materializeArtifactDistributors(repoModel, resolvedModel, targetResolution.resolvedTarget, diagnostics)
-      : isDeployStyleRunTarget
-      ? []
       : materializeArtifactExecutions(repoModel, resolvedModel, targetResolution.resolvedTarget, diagnostics);
   const execution =
     repoExecutions.find((repoExecution) => repoExecution.status === "runnable")?.execution ??

@@ -16,7 +16,7 @@ export function resolveArtifactSelection(
     .map((token) => token.trim())
     .filter((token) => token.length > 0);
 
-  if (normalizedSelectors.length === 0 || normalizedSelectors.some((token) => token === "all")) {
+  if (normalizedSelectors.length === 0) {
     return {
       artifactNames: runnableArtifacts.map((artifact) => artifact.artifactName),
       diagnostics,

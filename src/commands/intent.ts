@@ -8,8 +8,6 @@ const RUN_TARGET_KEYWORDS = new Set([
   "fake",
   "fake-local",
   "fake-local-01",
-  "install-revert",
-  "install-revert-01",
 ]);
 
 const DEPLOY_TARGET_KEYWORDS = new Set([
@@ -187,8 +185,6 @@ function parseSupportedRunTarget(tokens: string[]): { target: SupportedTarget; a
       case "local-01":
       case "fake-local":
       case "fake-local-01":
-      case "install-revert":
-      case "install-revert-01":
         return {
           target: targetTokens[0],
           artifactSelectors,
