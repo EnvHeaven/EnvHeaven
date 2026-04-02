@@ -26,7 +26,9 @@ export type SupportedTarget =
   | "beta-01"
   | "production-01"
   | "fake-local"
-  | "fake-local-01";
+  | "fake-local-01"
+  | "install-revert"
+  | "install-revert-01";
 
 export interface EnvRepoFile {
   sourcePath: string;

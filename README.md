@@ -23,10 +23,13 @@
   - `envheaven run fake-local-01`
 - `envheaven deploy local`
 - `envheaven deploy local-01`
+- `envheaven deploy local all`
+- `envheaven deploy local envheaven`
 - `envheaven deploy production`
 - `envheaven deploy production-01`
 - `envheaven deploy production @envheaven/plugins-offiline-web-ui`
-- `envheaven deploy local envheaven`
+- `envheaven run install-revert`
+- `envheaven run install-revert-01`
 - `envheaven offiline-web-ui`
 - `eh run local`
 - `eh default`
@@ -55,7 +58,9 @@ Running a supported `run` intent resolves the repo, loads the plugin declared in
 
 Running a supported `deploy` intent materializes repo-level deploy steps and per-artifact distributor executions, then executes them sequentially. The current deploy support is intentionally narrow and targets EnvHeaven-style package monorepos that define `RepoDeployExecutions` and `ArtifactsDistributors`.
 
-Deploy commands can now accept additional artifact selector tags after the deploy target. If no selectors are supplied, all deployable artifacts still run. Selectors match artifact ids, package names, and common aliases like `envheaven` or `plugins-nodejs-pnpm`. Ambiguous selectors are rejected.
+Deploy commands can now accept additional artifact selector tags after the deploy target. If no selectors are supplied, all deployable artifacts still run. The special selector `all` is an explicit wildcard that also selects every artifact. Selectors match artifact ids, package names, and common aliases like `envheaven` or `plugins-nodejs-pnpm`. Ambiguous selectors are rejected.
+
+Running `envheaven run install-revert` (or `envheaven run install-revert-01`) reinstalls all four EnvHeaven packages from the public npm registry globally using pnpm. This is the canonical "undo local dev install" command. Unlike other `run` intents, `install-revert` does not use a plugin; it is routed through the repo-level deploy execution path (`RepoDeployExecutions.install-revert-01`) which runs a `pnpm add --global` step for each package.
 
 On Windows, direct `pnpm` and `npm` deploy steps run natively in the Windows host environment for the package-monorepo workflow. Other commands still follow the existing WSL delegation path in v0.1.0.
 
