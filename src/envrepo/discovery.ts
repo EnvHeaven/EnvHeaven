@@ -6,16 +6,6 @@ import type { Diagnostic, EnvRepoFile, RepoDiscoveryResult } from "../types";
 
 const ENV_DIR_NAME = ".envheaven";
 const FILE_SUFFIX = ".envheaven.env-map-layer.json";
-const SKIPPED_DIRECTORIES = new Set([
-  ".git",
-  "node_modules",
-  "dist",
-  "coverage",
-  "test",
-  "tests",
-  "__tests__",
-  "fixtures",
-]);
 
 export async function discoverEnvRepo(rootDirectory: string): Promise<RepoDiscoveryResult> {
   const envDirectories = await findEnvDirectories(rootDirectory);
@@ -48,36 +38,35 @@ export async function discoverEnvRepo(rootDirectory: string): Promise<RepoDiscov
 }
 
 async function findEnvDirectories(rootDirectory: string): Promise<string[]> {
-  const found: string[] = [];
-  await walkDirectories(rootDirectory, async (directoryPath, direntNames) => {
-    for (const direntName of direntNames) {
-      if (direntName === ENV_DIR_NAME) {
-        found.push(path.join(directoryPath, direntName));
-      }
+  // Look for .envheaven in rootDirectory first. If found, use it exclusively
+  // so that nested submodule configs are not accidentally merged in.
+  // If not found, walk up ancestor directories to locate the nearest config.
+  const localEnvDir = path.join(rootDirectory, ENV_DIR_NAME);
+  try {
+    const stat = await fs.stat(localEnvDir);
+    if (stat.isDirectory()) {
+      return [localEnvDir];
     }
-  });
-  return found;
-}
-
-async function walkDirectories(
-  currentDirectory: string,
-  onDirectory: (directoryPath: string, direntNames: string[]) => Promise<void>,
-): Promise<void> {
-  const entries = await fs.readdir(currentDirectory, { withFileTypes: true });
-  const direntNames = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
-  await onDirectory(currentDirectory, direntNames);
-
-  for (const entry of entries) {
-    if (!entry.isDirectory()) {
-      continue;
-    }
-
-    if (SKIPPED_DIRECTORIES.has(entry.name)) {
-      continue;
-    }
-
-    await walkDirectories(path.join(currentDirectory, entry.name), onDirectory);
+  } catch {
+    // Not present — fall through to ancestor search.
   }
+
+  // Walk up the directory tree to find the nearest ancestor with .envheaven.
+  let current = path.dirname(rootDirectory);
+  while (current !== path.dirname(current)) {
+    const ancestorEnvDir = path.join(current, ENV_DIR_NAME);
+    try {
+      const stat = await fs.stat(ancestorEnvDir);
+      if (stat.isDirectory()) {
+        return [ancestorEnvDir];
+      }
+    } catch {
+      // Not present — keep walking up.
+    }
+    current = path.dirname(current);
+  }
+
+  return [];
 }
 
 async function collectLayerFiles(envDirectory: string): Promise<EnvRepoFile[]> {

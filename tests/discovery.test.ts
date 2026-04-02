@@ -5,7 +5,7 @@ import { discoverEnvRepo } from "../src/envrepo/discovery";
 
 const fixturesRoot = path.join(__dirname, "fixtures");
 
-test("discovers envheaven files recursively and parses JSONC", async () => {
+test("discovers envheaven directory at repo root and parses JSONC", async () => {
   const repoRoot = path.join(fixturesRoot, "repo-nested");
   const result = await discoverEnvRepo(repoRoot);
   assert.equal(result.envDirectories.length, 1);
