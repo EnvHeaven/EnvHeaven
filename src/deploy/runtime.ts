@@ -46,6 +46,25 @@ export async function withTemporaryPackageVersion<T>(
   }
 }
 
+export async function withPermanentPackageVersion<T>(
+  packageDirectory: string,
+  targetVersion: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  if (!isValidVersionString(targetVersion)) {
+    throw new Error(`Invalid package version "${targetVersion}".`);
+  }
+
+  const packageJsonPath = path.join(packageDirectory, "package.json");
+  const originalContent = await fs.readFile(packageJsonPath, "utf8");
+  const parsed = JSON.parse(originalContent) as Record<string, unknown>;
+  parsed.version = targetVersion;
+
+  await fs.writeFile(packageJsonPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+
+  return await action();
+}
+
 export async function createArtifactDeployTag(
   repoRoot: string,
   artifactDirectory: string,

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { parseGlobalFlags } from "./cli-flags";
 import { verboseLog, writeOutput } from "./cli-output";
@@ -8,6 +9,7 @@ import {
   buildMissingProductionVersionDiagnostic,
   createArtifactDeployTag,
   readPackageMetadata,
+  withPermanentPackageVersion,
   withTemporaryPackageVersion,
 } from "./deploy/runtime";
 import { applyPnpmRecursiveFilter, isLocalGlobalInstall } from "./deploy/plan-filter";
@@ -32,7 +34,14 @@ import type {
   SupportedTarget,
 } from "./types";
 
-const PACKAGE_VERSION = "0.1.0";
+const PACKAGE_VERSION: string = (() => {
+  try {
+    const pkgPath = path.join(__dirname, "..", "package.json");
+    return (JSON.parse(readFileSync(pkgPath, "utf8")) as { version: string }).version;
+  } catch {
+    return "0.1.0";
+  }
+})();
 
 async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
@@ -543,7 +552,8 @@ async function executeArtifactDeploy(
     },
   };
 
-  const result = await withTemporaryPackageVersion(packageDirectory, resolvedVersion.value, async () => {
+  const applyVersion = isLocalGlobalInstall_ ? withPermanentPackageVersion : withTemporaryPackageVersion;
+  const result = await applyVersion(packageDirectory, resolvedVersion.value, async () => {
     return await executePlanItem(artifactExecution.runnerName, executionToRun, runtimeContext, diagnostics);
   });
 

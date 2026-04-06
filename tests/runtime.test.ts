@@ -4,7 +4,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { createArtifactDeployTag, withTemporaryPackageVersion } from "../src/deploy/runtime";
+import { createArtifactDeployTag, withPermanentPackageVersion, withTemporaryPackageVersion } from "../src/deploy/runtime";
 
 test("temporarily overrides package.json version and restores it on success", async () => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "envheaven-runtime-"));
@@ -46,6 +46,48 @@ test("temporarily overrides package.json version and restores it on failure", as
 
   const restoredVersion = JSON.parse(await fs.readFile(packageJsonPath, "utf8")).version as string;
   assert.equal(restoredVersion, "0.1.0");
+});
+
+test("withPermanentPackageVersion: writes version and does not restore it after action", async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "envheaven-runtime-"));
+  const packageDirectory = path.join(tempRoot, "artifact");
+  const packageJsonPath = path.join(packageDirectory, "package.json");
+  await fs.mkdir(packageDirectory, { recursive: true });
+  await fs.writeFile(
+    packageJsonPath,
+    `${JSON.stringify({ name: "test-package", version: "0.1.0" }, null, 2)}\n`,
+    "utf8",
+  );
+
+  let versionDuringAction = "";
+  await withPermanentPackageVersion(packageDirectory, "0.1.7", async () => {
+    versionDuringAction = JSON.parse(await fs.readFile(packageJsonPath, "utf8")).version as string;
+  });
+
+  const versionAfterAction = JSON.parse(await fs.readFile(packageJsonPath, "utf8")).version as string;
+  assert.equal(versionDuringAction, "0.1.7");
+  assert.equal(versionAfterAction, "0.1.7");
+});
+
+test("withPermanentPackageVersion: version persists even when action throws", async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "envheaven-runtime-"));
+  const packageDirectory = path.join(tempRoot, "artifact");
+  const packageJsonPath = path.join(packageDirectory, "package.json");
+  await fs.mkdir(packageDirectory, { recursive: true });
+  await fs.writeFile(
+    packageJsonPath,
+    `${JSON.stringify({ name: "test-package", version: "0.1.0" }, null, 2)}\n`,
+    "utf8",
+  );
+
+  await assert.rejects(async () => {
+    await withPermanentPackageVersion(packageDirectory, "0.1.8", async () => {
+      throw new Error("install failed");
+    });
+  });
+
+  const versionAfterFailure = JSON.parse(await fs.readFile(packageJsonPath, "utf8")).version as string;
+  assert.equal(versionAfterFailure, "0.1.8");
 });
 
 test("creates a local deploy tag inside an artifact git repo", async () => {
