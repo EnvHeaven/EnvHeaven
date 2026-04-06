@@ -114,3 +114,17 @@ test("resolveArtifactVersion returns fallback when no registry entry exists", as
   assert.equal(resolved.source, "fallback");
   assert.equal(resolved.value, "0.1.0");
 });
+
+test("after bootstrap, resolveArtifactVersion source is never 'fallback' (dynamic-artifact-version-fallback path eliminated)", async () => {
+  const { store } = makeIsolatedStore();
+  const repoRoot = "/fake/repo";
+  const artifactName = "bootstrap-no-fallback";
+
+  await store.bootstrapArtifactVersion(repoRoot, artifactName, undefined, "2.3.4");
+
+  const resolved = await store.resolveArtifactVersion(repoRoot, artifactName, undefined, "999.9.9");
+
+  assert.notEqual(resolved.source, "fallback", "source must not be fallback after bootstrap");
+  assert.equal(resolved.source, "registry-next");
+  assert.equal(resolved.value, "2.3.5");
+});

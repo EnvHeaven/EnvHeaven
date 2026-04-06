@@ -108,17 +108,6 @@ export async function createArtifactDeployTag(
   };
 }
 
-export function buildVersionFallbackDiagnostic(
-  artifactName: string,
-  fallbackVersion: string,
-): Diagnostic {
-  return createDiagnostic(
-    "warning",
-    "dynamic-artifact-version-fallback",
-    `Artifact "${artifactName}" is using fallback version "${fallbackVersion}" because no version registry entry exists yet.`,
-  );
-}
-
 export function buildMissingProductionVersionDiagnostic(artifactName: string, packageVersion: string): Diagnostic {
   return createDiagnostic(
     "warning",
