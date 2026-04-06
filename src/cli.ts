@@ -10,6 +10,7 @@ import {
   readPackageMetadata,
   withTemporaryPackageVersion,
 } from "./deploy/runtime";
+import { applyPnpmRecursiveFilter, isLocalGlobalInstall } from "./deploy/plan-filter";
 import { resolveArtifactSelection } from "./deploy/selection";
 import { createDiagnostic, hasErrors } from "./diagnostics";
 import { discoverEnvRepo } from "./envrepo/discovery";
@@ -354,7 +355,8 @@ async function executeDeployPlan(
 
   for (const repoExecution of plan.repoExecutions) {
     verboseLog(`deploy step start: ${repoExecution.name}`, options);
-    const result = await executePlanItem(repoExecution.name, repoExecution.execution, runtimeContext, diagnostics);
+    const filteredExecution = applyPnpmRecursiveFilter(repoExecution.execution, plan.artifactExecutions, plan.selectedArtifacts);
+    const result = await executePlanItem(repoExecution.name, filteredExecution, runtimeContext, diagnostics);
     verboseLog(`deploy step done: ${repoExecution.name} (exit ${String(result["exitCode"] ?? 0)})`, options);
     repoResults.push({
       name: repoExecution.name,
@@ -500,11 +502,15 @@ async function executeArtifactDeploy(
     hydratedExecution.command === "npm" &&
     hydratedExecution.args[0] === "publish";
 
+  const isLocalGlobalInstall_ = isLocalGlobalInstall(hydratedExecution.command, hydratedExecution.args);
+
+  const needsVersionedInstall = isProductionPublish || isLocalGlobalInstall_;
+
   const packageDirectory = artifactExecution.repoCloneFolderPath
     ? path.resolve(runtimeContext.repoRoot, artifactExecution.repoCloneFolderPath)
     : hydratedExecution.cwd;
 
-  if (!isProductionPublish || !packageDirectory) {
+  if (!needsVersionedInstall || !packageDirectory) {
     const result = await executePlanItem(artifactExecution.runnerName, hydratedExecution, runtimeContext, diagnostics);
     return {
       exitCode: (result.exitCode as number) ?? 1,
