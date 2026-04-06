@@ -6,7 +6,6 @@ import { inferCommandIntent } from "./commands/intent";
 import { startDaemon } from "./daemon/server";
 import {
   buildMissingProductionVersionDiagnostic,
-  buildVersionFallbackDiagnostic,
   createArtifactDeployTag,
   readPackageMetadata,
   withTemporaryPackageVersion,
@@ -422,37 +421,55 @@ async function hydrateArtifactExecution(
   const packageDirectory = artifactExecution.repoCloneFolderPath
     ? path.resolve(repoRoot, artifactExecution.repoCloneFolderPath)
     : artifactExecution.execution.cwd;
-  let fallbackVersion = "0.1.0";
 
-  if (packageDirectory) {
-    try {
-      const packageMetadata = await readPackageMetadata(packageDirectory);
-      fallbackVersion = packageMetadata.version;
-    } catch {
-      fallbackVersion = "0.1.0";
-    }
-  }
-
-  const resolvedVersion = await stateStore.resolveArtifactVersion(
+  const existingRecord = await stateStore.getVersionRecord(
     repoRoot,
     artifactExecution.artifactName,
     artifactExecution.packageName,
-    fallbackVersion,
   );
 
-  if (resolvedVersion.source === "fallback") {
-    diagnostics.push(buildVersionFallbackDiagnostic(artifactExecution.artifactName, fallbackVersion));
+  let resolvedVersionValue: string;
+
+  if (existingRecord?.nextVersion) {
+    resolvedVersionValue = existingRecord.nextVersion;
+  } else if (existingRecord?.lastVersion) {
+    resolvedVersionValue = existingRecord.lastVersion;
+  } else {
+    let packageJsonVersion = "0.1.0";
+    if (packageDirectory) {
+      try {
+        const packageMetadata = await readPackageMetadata(packageDirectory);
+        packageJsonVersion = packageMetadata.version;
+      } catch {
+        packageJsonVersion = "0.1.0";
+      }
+    }
+
+    const { record } = await stateStore.bootstrapArtifactVersion(
+      repoRoot,
+      artifactExecution.artifactName,
+      artifactExecution.packageName,
+      packageJsonVersion,
+    );
+    resolvedVersionValue = record.nextVersion ?? record.lastVersion ?? packageJsonVersion;
+    diagnostics.push(
+      createDiagnostic(
+        "info",
+        "version-bootstrapped",
+        `Artifact "${artifactExecution.artifactName}" version initialized to "${resolvedVersionValue}" (derived from package.json "${packageJsonVersion}").`,
+      ),
+    );
   }
 
   return {
     ...artifactExecution.execution,
     args: artifactExecution.execution.args.map((arg) =>
-      materializeDynamicVersionToken(arg, artifactExecution.artifactName, resolvedVersion.value),
+      materializeDynamicVersionToken(arg, artifactExecution.artifactName, resolvedVersionValue),
     ),
     env: Object.fromEntries(
       Object.entries(artifactExecution.execution.env).map(([key, value]) => [
         key,
-        materializeDynamicVersionToken(value, artifactExecution.artifactName, resolvedVersion.value),
+        materializeDynamicVersionToken(value, artifactExecution.artifactName, resolvedVersionValue),
       ]),
     ),
   };

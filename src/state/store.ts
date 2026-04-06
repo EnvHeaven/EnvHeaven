@@ -175,6 +175,22 @@ export class EnvHeavenStateStore {
     };
   }
 
+  async bootstrapArtifactVersion(
+    repoRoot: string,
+    artifactName: string,
+    packageName: string | undefined,
+    packageJsonVersion: string,
+  ): Promise<{ record: ArtifactVersionRecord; bootstrapped: boolean }> {
+    const existing = await this.getVersionRecord(repoRoot, artifactName, packageName);
+    if (existing?.nextVersion || existing?.lastVersion) {
+      return { record: existing, bootstrapped: false };
+    }
+
+    const nextVersion = incrementPatchVersion(packageJsonVersion);
+    const record = await this.setArtifactVersion(repoRoot, artifactName, packageName, { nextVersion });
+    return { record, bootstrapped: true };
+  }
+
   async advanceArtifactVersion(
     repoRoot: string,
     artifactName: string,
