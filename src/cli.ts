@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import path from "node:path";
+import { parseGlobalFlags } from "./cli-flags";
+import { verboseLog, writeOutput } from "./cli-output";
 import { inferCommandIntent } from "./commands/intent";
 import { startDaemon } from "./daemon/server";
 import {
@@ -20,19 +22,65 @@ import { loadPlugin } from "./plugins/loader";
 import { EnvHeavenStateStore } from "./state/store";
 import type {
   ArtifactExecutionPlan,
+  CommandIntent,
   Diagnostic,
   ExecutionSpec,
+  GlobalOptions,
   PluginRuntimeContext,
   RepoExecutionPlan,
   ResolvedPlan,
+  SupportedTarget,
 } from "./types";
 
+const PACKAGE_VERSION = "0.1.0";
+
 async function main(): Promise<void> {
-  const args = process.argv.slice(2);
-  const { intent, diagnostics: intentDiagnostics } = inferCommandIntent(args);
+  const rawArgs = process.argv.slice(2);
+  const { options, remainingArgs } = parseGlobalFlags(rawArgs);
+  verboseLog("flags parsed", options);
+
+  if (options.version) {
+    process.stdout.write(`EnvHeaven v${PACKAGE_VERSION}\n`);
+    process.exitCode = 0;
+    return;
+  }
+
+  let intentArgs = remainingArgs;
+  let intent: CommandIntent | null = null;
+  let intentDiagnostics: Diagnostic[] = [];
+
+  if (options.jsonRequest) {
+    const jsonArg = remainingArgs.find((a) => a.trimStart().startsWith("{"));
+    if (!jsonArg) {
+      writeOutput(
+        {
+          diagnostics: [
+            createDiagnostic("error", "json-request-missing", "--json-request requires a JSON string argument, e.g. '{\"kind\":\"run\",\"target\":\"local\"}'."),
+          ],
+        },
+        1,
+        options,
+      );
+      return;
+    }
+    const parsed = parseJsonRequestArg(jsonArg);
+    if (!parsed.intent) {
+      writeOutput({ diagnostics: parsed.diagnostics }, 1, options);
+      return;
+    }
+    intent = parsed.intent;
+    intentDiagnostics = [];
+    intentArgs = [];
+  } else {
+    const inferred = inferCommandIntent(intentArgs);
+    intent = inferred.intent ?? null;
+    intentDiagnostics = inferred.diagnostics;
+  }
+
+  verboseLog("intent resolved", options);
 
   if (!intent) {
-    writeJsonAndExit({ diagnostics: intentDiagnostics }, 1);
+    writeOutput({ diagnostics: intentDiagnostics }, 1, options);
     return;
   }
 
@@ -44,7 +92,7 @@ async function main(): Promise<void> {
     const server = await startDaemon(repoRoot, 0, stateStore);
     const address = server.address();
     const port = typeof address === "object" && address ? address.port : null;
-    writeJsonAndExit(
+    writeOutput(
       {
         mode: "daemon",
         port,
@@ -55,6 +103,7 @@ async function main(): Promise<void> {
         ],
       },
       0,
+      options,
     );
     return;
   }
@@ -67,7 +116,7 @@ async function main(): Promise<void> {
     const launched = await launchOffilineWebUi(repoRoot, daemonUrl, stateStore);
     installServerSignalHandlers([daemonServer, launched.server]);
 
-    writeJsonAndExit(
+    writeOutput(
       {
         mode: "offiline-web-ui",
         daemonUrl,
@@ -79,12 +128,13 @@ async function main(): Promise<void> {
         ],
       },
       0,
+      options,
     );
     return;
   }
 
   if (!intent.target) {
-    writeJsonAndExit(
+    writeOutput(
       {
         diagnostics: [
           ...intentDiagnostics,
@@ -92,13 +142,19 @@ async function main(): Promise<void> {
         ],
       },
       1,
+      options,
     );
     return;
   }
 
+  verboseLog("repo discovery started", options);
   const discovery = await discoverEnvRepo(repoRoot);
+  verboseLog("repo discovery done", options);
+
   const repoModel = buildRepoModel(discovery);
   const plan = resolvePlan(repoModel, intent.target, intent.kind);
+  verboseLog("plan resolved", options);
+
   const diagnostics: Diagnostic[] = [...intentDiagnostics, ...plan.diagnostics];
 
   const runtimeContext: PluginRuntimeContext = {
@@ -115,8 +171,20 @@ async function main(): Promise<void> {
       plan.selectedArtifacts = selection.artifactNames;
       plan.artifactExecutions = plan.artifactExecutions.filter((entry) => selection.artifactNames.includes(entry.artifactName));
       plan.execution =
+        plan.repoExecutions.find((repoExecution) => repoExecution.status === "runnable")?.execution ??
         plan.artifactExecutions.find((artifactExecution) => artifactExecution.status === "runnable")?.execution ?? null;
       plan.pluginPackage = plan.execution?.pluginPackage;
+    }
+
+    if (plan.repoExecutions.length > 0) {
+      const deployResults = await executeDeployPlan(plan, runtimeContext, diagnostics, stateStore, options);
+      verboseLog("output written", options);
+      writeOutput(
+        { intent, plan, deploy: deployResults.payload, diagnostics },
+        hasErrors(diagnostics) ? 1 : deployResults.exitCode,
+        options,
+      );
+      return;
     }
   }
 
@@ -132,19 +200,14 @@ async function main(): Promise<void> {
         null;
     }
 
-    const deployResults = await executeDeployPlan(plan, runtimeContext, diagnostics, stateStore);
-    const exitCode = hasErrors(diagnostics)
-      ? 1
-      : deployResults.exitCode;
+    const deployResults = await executeDeployPlan(plan, runtimeContext, diagnostics, stateStore, options);
+    const exitCode = hasErrors(diagnostics) ? 1 : deployResults.exitCode;
 
-    writeJsonAndExit(
-      {
-        intent,
-        plan,
-        deploy: deployResults.payload,
-        diagnostics,
-      },
+    verboseLog("output written", options);
+    writeOutput(
+      { intent, plan, deploy: deployResults.payload, diagnostics },
       exitCode,
+      options,
     );
     return;
   }
@@ -153,7 +216,9 @@ async function main(): Promise<void> {
   let executionResult: Record<string, unknown> | undefined;
 
   if (plan.pluginPackage) {
+    verboseLog(`plugin load: ${plan.pluginPackage}`, options);
     const loadedPlugin = await loadPlugin(plan.pluginPackage, repoRoot);
+    verboseLog(`plugin loaded: ${plan.pluginPackage}`, options);
     diagnostics.push(...loadedPlugin.diagnostics);
 
     if (loadedPlugin.plugin.inspect) {
@@ -175,7 +240,9 @@ async function main(): Promise<void> {
           ),
         );
       } else {
+        verboseLog("spawn started", options);
         const executed = await loadedPlugin.plugin.execute(plan, runtimeContext);
+        verboseLog("spawn done", options);
         if (executed.diagnostics) {
           diagnostics.push(...executed.diagnostics);
         }
@@ -194,16 +261,60 @@ async function main(): Promise<void> {
       ? (executionResult.exitCode as number)
       : 0;
 
-  writeJsonAndExit(
-    {
-      intent,
-      plan,
-      plugin: pluginDetails,
-      execution: executionResult,
-      diagnostics,
-    },
+  verboseLog("output written", options);
+  writeOutput(
+    { intent, plan, plugin: pluginDetails, execution: executionResult, diagnostics },
     exitCode,
+    options,
   );
+}
+
+function parseJsonRequestArg(jsonString: string): { intent: CommandIntent | null; diagnostics: Diagnostic[] } {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(jsonString) as Record<string, unknown>;
+  } catch {
+    return {
+      intent: null,
+      diagnostics: [
+        createDiagnostic("error", "json-request-parse-error", `--json-request argument is not valid JSON: ${jsonString}`),
+      ],
+    };
+  }
+
+  if (typeof parsed["kind"] !== "string") {
+    return {
+      intent: null,
+      diagnostics: [
+        createDiagnostic("error", "json-request-missing-kind", '--json-request JSON must contain a "kind" field (e.g. "run", "deploy", "daemon").'),
+      ],
+    };
+  }
+
+  const kind = parsed["kind"] as CommandIntent["kind"];
+  const supportedKinds = new Set(["daemon", "run", "deploy", "offiline-web-ui"]);
+  if (!supportedKinds.has(kind)) {
+    return {
+      intent: null,
+      diagnostics: [
+        createDiagnostic("error", "json-request-invalid-kind", `--json-request "kind" must be one of: daemon, run, deploy, offiline-web-ui. Got: "${kind}".`),
+      ],
+    };
+  }
+
+  const target = typeof parsed["target"] === "string" ? (parsed["target"] as SupportedTarget) : undefined;
+  const selectors = Array.isArray(parsed["selectors"]) ? (parsed["selectors"] as string[]) : undefined;
+
+  return {
+    intent: {
+      kind,
+      target,
+      rawArgs: [jsonString],
+      normalizedTokens: [kind, ...(target ? [target] : [])],
+      artifactSelectors: selectors,
+    },
+    diagnostics: [],
+  };
 }
 
 function installServerSignalHandlers(servers: Array<{ close(callback: (error?: Error | undefined) => void): void }>): void {
@@ -217,16 +328,12 @@ function installServerSignalHandlers(servers: Array<{ close(callback: (error?: E
   process.once("SIGTERM", closeAll);
 }
 
-function writeJsonAndExit(payload: unknown, exitCode: number): void {
-  process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
-  process.exitCode = exitCode;
-}
-
 void main().catch((error) => {
   const diagnostics = [
     createDiagnostic("error", "cli-failure", error instanceof Error ? error.message : "Unknown CLI failure."),
   ];
-  writeJsonAndExit({ diagnostics }, 1);
+  process.stdout.write(`${JSON.stringify({ diagnostics }, null, 2)}\n`);
+  process.exitCode = 1;
 });
 
 async function executeDeployPlan(
@@ -234,6 +341,7 @@ async function executeDeployPlan(
   runtimeContext: PluginRuntimeContext,
   diagnostics: Diagnostic[],
   stateStore: EnvHeavenStateStore,
+  options: GlobalOptions,
 ): Promise<{
   exitCode: number;
   payload: {
@@ -246,7 +354,9 @@ async function executeDeployPlan(
   let exitCode = 0;
 
   for (const repoExecution of plan.repoExecutions) {
+    verboseLog(`deploy step start: ${repoExecution.name}`, options);
     const result = await executePlanItem(repoExecution.name, repoExecution.execution, runtimeContext, diagnostics);
+    verboseLog(`deploy step done: ${repoExecution.name} (exit ${String(result["exitCode"] ?? 0)})`, options);
     repoResults.push({
       name: repoExecution.name,
       status: repoExecution.status,
@@ -265,6 +375,7 @@ async function executeDeployPlan(
   }
 
   for (const artifactExecution of plan.artifactExecutions) {
+    verboseLog(`deploy step start: ${artifactExecution.runnerName}`, options);
     const hydratedExecution = await hydrateArtifactExecution(
       artifactExecution,
       runtimeContext.repoRoot,
@@ -280,6 +391,7 @@ async function executeDeployPlan(
       stateStore,
       plan.resolvedTarget,
     );
+    verboseLog(`deploy step done: ${artifactExecution.runnerName} (exit ${String(result.exitCode)})`, options);
     artifactResults.push(result.payload);
     if (result.exitCode !== 0) {
       exitCode = result.exitCode;
@@ -361,10 +473,7 @@ async function executeArtifactDeploy(
         artifactName: artifactExecution.artifactName,
         runnerName: artifactExecution.runnerName,
         status: artifactExecution.status,
-        result: {
-          exitCode: 1,
-          skipped: true,
-        },
+        result: { exitCode: 1, skipped: true },
       },
     };
   }
@@ -466,10 +575,7 @@ async function executePlanItem(
   diagnostics: Diagnostic[],
 ): Promise<Record<string, unknown>> {
   if (!execution) {
-    return {
-      skipped: true,
-      exitCode: 0,
-    };
+    return { skipped: true, exitCode: 0 };
   }
 
   if (execution.pluginPackage) {
@@ -486,9 +592,7 @@ async function executePlanItem(
       diagnostics.push(
         createDiagnostic("error", "plugin-execute-missing", `Plugin "${execution.pluginPackage}" does not export execute().`),
       );
-      return {
-        exitCode: 1,
-      };
+      return { exitCode: 1 };
     }
 
     const executed = await loadedPlugin.plugin.execute(

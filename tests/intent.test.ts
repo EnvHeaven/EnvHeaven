@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { inferCommandIntent } from "../src/commands/intent";
+import { parseGlobalFlags } from "../src/cli-flags";
 
 const acceptedCases = [
   { args: [], kind: "daemon", target: undefined },
@@ -67,3 +68,27 @@ for (const rejectedCase of rejectedCases) {
     assert.ok(result.diagnostics.some((diagnostic) => diagnostic.severity === "error"));
   });
 }
+
+test("global flag --verbose before run local is stripped before intent parsing", () => {
+  const { remainingArgs } = parseGlobalFlags(["--verbose", "run", "local"]);
+  const result = inferCommandIntent(remainingArgs);
+  assert.equal(result.diagnostics.length, 0);
+  assert.equal(result.intent?.kind, "run");
+  assert.equal(result.intent?.target, "local");
+});
+
+test("global flag --json-response between run and local is stripped before intent parsing", () => {
+  const { remainingArgs } = parseGlobalFlags(["run", "--json-response", "local"]);
+  const result = inferCommandIntent(remainingArgs);
+  assert.equal(result.diagnostics.length, 0);
+  assert.equal(result.intent?.kind, "run");
+  assert.equal(result.intent?.target, "local");
+});
+
+test("global flag --json before deploy production is stripped before intent parsing", () => {
+  const { remainingArgs } = parseGlobalFlags(["--json", "deploy", "production"]);
+  const result = inferCommandIntent(remainingArgs);
+  assert.equal(result.diagnostics.length, 0);
+  assert.equal(result.intent?.kind, "deploy");
+  assert.equal(result.intent?.target, "production-01");
+});

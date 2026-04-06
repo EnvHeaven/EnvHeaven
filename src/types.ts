@@ -1,5 +1,12 @@
 export type DiagnosticSeverity = "info" | "warning" | "error";
 
+export interface GlobalOptions {
+  version: boolean;
+  verbose: boolean;
+  jsonRequest: boolean;
+  jsonResponse: boolean;
+}
+
 export interface Diagnostic {
   severity: DiagnosticSeverity;
   code: string;
@@ -26,7 +33,9 @@ export type SupportedTarget =
   | "beta-01"
   | "production-01"
   | "fake-local"
-  | "fake-local-01";
+  | "fake-local-01"
+  | "install-revert"
+  | "install-revert-01";
 
 export interface EnvRepoFile {
   sourcePath: string;
