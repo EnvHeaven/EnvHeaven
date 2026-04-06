@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { parseGlobalFlags } from "./cli-flags";
 import { verboseLog, writeOutput } from "./cli-output";
@@ -101,10 +102,13 @@ async function main(): Promise<void> {
     const server = await startDaemon(repoRoot, 0, stateStore);
     const address = server.address();
     const port = typeof address === "object" && address ? address.port : null;
+    const daemonUrls = port === null ? [] : buildUrlList(port);
     writeOutput(
       {
         mode: "daemon",
         port,
+        daemonUrl: daemonUrls[0] ?? null,
+        daemonUrls,
         diagnostics: [
           createDiagnostic("info", "daemon-started", `EnvHeaven daemon started on port ${String(port)}.`),
           createDiagnostic("info", "offiline-web-ui-hint", "Hint: `envheaven offiline-web-ui` is an option."),
@@ -121,15 +125,20 @@ async function main(): Promise<void> {
     const daemonServer = await startDaemon(repoRoot, 0, stateStore);
     const daemonAddress = daemonServer.address();
     const daemonPort = typeof daemonAddress === "object" && daemonAddress ? daemonAddress.port : null;
-    const daemonUrl = `http://127.0.0.1:${String(daemonPort)}`;
+    const daemonUrls = daemonPort === null ? [] : buildUrlList(daemonPort);
+    const daemonUrl = daemonUrls[0] ?? `http://localhost:${String(daemonPort)}`;
     const launched = await launchOffilineWebUi(repoRoot, daemonUrl, stateStore);
+    const uiPort = safeParsePortFromUrl(launched.uiUrl);
+    const uiUrls = uiPort === null ? [launched.uiUrl] : buildUrlList(uiPort);
     installServerSignalHandlers([daemonServer, launched.server]);
 
     writeOutput(
       {
         mode: "offiline-web-ui",
         daemonUrl,
+        daemonUrls,
         uiUrl: launched.uiUrl,
+        uiUrls,
         source: launched.source,
         diagnostics: [
           createDiagnostic("info", "daemon-started", `EnvHeaven daemon started on ${daemonUrl}.`),
@@ -335,6 +344,41 @@ function installServerSignalHandlers(servers: Array<{ close(callback: (error?: E
 
   process.once("SIGINT", closeAll);
   process.once("SIGTERM", closeAll);
+}
+
+function buildUrlList(port: number): string[] {
+  const urls = [
+    `http://localhost:${String(port)}`,
+    `http://127.0.0.1:${String(port)}`,
+  ];
+  const lanIp = getLanIp();
+  if (lanIp) {
+    urls.push(`http://${lanIp}:${String(port)}`);
+  }
+
+  return [...new Set(urls)];
+}
+
+function getLanIp(): string | null {
+  for (const addresses of Object.values(os.networkInterfaces())) {
+    for (const address of addresses ?? []) {
+      if (address.family === "IPv4" && !address.internal && !address.address.startsWith("169.254.")) {
+        return address.address;
+      }
+    }
+  }
+
+  return null;
+}
+
+function safeParsePortFromUrl(urlValue: string): number | null {
+  try {
+    const parsed = new URL(urlValue);
+    const port = Number.parseInt(parsed.port, 10);
+    return Number.isFinite(port) ? port : null;
+  } catch {
+    return null;
+  }
 }
 
 void main().catch((error) => {

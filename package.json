@@ -30,9 +30,11 @@
     "jsonc"
   ],
   "dependencies": {
-    "jsonc-parser": "^3.3.1"
+    "jsonc-parser": "^3.3.1",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
+    "@types/ws": "^8.18.1",
     "@types/node": "^24.6.0",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"

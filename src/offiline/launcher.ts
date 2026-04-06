@@ -70,7 +70,7 @@ async function resolveOffilineWebUiSource(
 
   if (await exists(localPackageJsonPath)) {
     if (!await exists(localDistEntryPath)) {
-      await runCommand("npm", ["run", "build"], localPackagePath);
+      await runCommand("pnpm", ["run", "build"], localPackagePath);
     }
 
     if (await exists(localDistEntryPath)) {
@@ -105,7 +105,7 @@ async function ensureCachedPackage(installRoot: string, packageName: string): Pr
   }
 
   if (!await exists(installedPackageJsonPath)) {
-    await runCommand("npm", ["install", "--no-package-lock", "--prefix", installRoot, packageName], installRoot);
+    await runCommand("pnpm", ["add", "--dir", installRoot, packageName], installRoot);
   }
 
   return installRoot;

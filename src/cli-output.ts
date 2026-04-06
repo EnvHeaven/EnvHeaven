@@ -36,8 +36,20 @@ function renderHumanOutput(payload: unknown): string {
     lines.push(`[info] daemon: ${p["daemonUrl"]}`);
   }
 
+  if (Array.isArray(p["daemonUrls"])) {
+    for (const url of p["daemonUrls"]) {
+      lines.push(`[info] daemon url: ${String(url)}`);
+    }
+  }
+
   if (typeof p["uiUrl"] === "string") {
     lines.push(`[info] ui: ${p["uiUrl"]}`);
+  }
+
+  if (Array.isArray(p["uiUrls"])) {
+    for (const url of p["uiUrls"]) {
+      lines.push(`[info] ui url: ${String(url)}`);
+    }
   }
 
   if (p["intent"] && typeof p["intent"] === "object") {
