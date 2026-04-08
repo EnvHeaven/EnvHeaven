@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -42,12 +43,23 @@ interface ActionRun {
   process: ReturnType<typeof spawn> | null;
 }
 
+function readOwnPackageVersion(): string {
+  try {
+    const pkgPath = path.join(__dirname, "..", "package.json");
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { version?: string };
+    return typeof pkg.version === "string" ? pkg.version : "0.1.0";
+  } catch {
+    return "0.1.0";
+  }
+}
+
 export async function startDaemon(
   rootDirectory: string,
   port = 0,
   stateStore = new EnvHeavenStateStore(),
-  daemonVersion = "0.1.0",
+  daemonVersion?: string,
 ): Promise<http.Server> {
+  const resolvedDaemonVersion = daemonVersion ?? readOwnPackageVersion();
   const normalizedRootDirectory = path.resolve(rootDirectory);
   await stateStore.rememberRepo(normalizedRootDirectory);
   let selectedRepoRoot = normalizedRootDirectory;
@@ -110,14 +122,15 @@ export async function startDaemon(
 
   function dispatchAction(actionId: string, action: ActionDefinition, repoRoot: string): ActionRun {
     const runId = randomUUID();
-    const [cmd, ...args] = action.runCommand.split(" ").filter(Boolean);
-    if (!cmd) throw new Error(`Action "${actionId}" has an empty runCommand.`);
+    if (!action.runCommand.trim()) throw new Error(`Action "${actionId}" has an empty runCommand.`);
 
-    const child = spawn(cmd, args, {
+    // Use shell=true so the full runCommand string (including quoted args and shell
+    // operators like &&, pipes, etc.) is parsed by the OS shell rather than split naively.
+    const child = spawn(action.runCommand, {
       cwd: repoRoot,
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
-      shell: process.platform === "win32",
+      shell: true,
     });
 
     const run: ActionRun = {
@@ -253,7 +266,7 @@ export async function startDaemon(
         const selectedRepo = await stateStore.getSelectedRepo(selectedRepoRoot);
         sendJson(response, 200, {
           ok: true,
-          version: daemonVersion,
+          version: resolvedDaemonVersion,
           daemon: {
             port: daemonPort,
             repoRoot: selectedRepoRoot,
