@@ -540,7 +540,9 @@ export async function startDaemon(
   });
 
   await new Promise<void>((resolve) => {
-    server.listen(port, "0.0.0.0", () => resolve());
+    // Bind to loopback only — the daemon is an internal service (UI connects via 127.0.0.1).
+    // Exposing command-execution endpoints on 0.0.0.0 would be a network-level RCE vector.
+    server.listen(port, "127.0.0.1", () => resolve());
   });
 
   return server;

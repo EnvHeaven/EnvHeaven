@@ -143,11 +143,11 @@ async function main(): Promise<void> {
     // ── First-run interactive setup ──────────────────────────────────────────
     let prefs = await loadPreferences();
     if (prefs === null) {
-      // First time — ask about auto-start preference
+      // First time — ask about auto-start preference; default is YES (Y/n semantics)
       const autoStart = await promptYesNo(
         "  EnvHeaven — first-run setup\n" +
           "  ─────────────────────────────────────────\n" +
-          "  Would you like to auto-start the offline UI when the daemon starts? [y/N] ",
+          "  Start the Offline UI automatically each time? (Y/n) ",
       );
       await savePreferences({ autoStartUi: autoStart });
       prefs = { autoStartUi: autoStart };
@@ -162,16 +162,52 @@ async function main(): Promise<void> {
     const existingLock = await readLockFile();
     const daemonAlive = !!(existingLock && existingLock.daemonPort > 0 && (await isPortOpen(existingLock.daemonPort)));
     if (daemonAlive) {
+      const uiAlreadyUp = !!(existingLock!.uiPort && existingLock!.uiPort > 0 && (await isPortOpen(existingLock!.uiPort)));
+
+      if (prefs?.autoStartUi && !uiAlreadyUp) {
+        // Daemon alive, UI not yet running — start UI only
+        const uiSpawnEnv: NodeJS.ProcessEnv = {
+          ...process.env,
+          ENVHEAVEN_BG_MODE: "1",
+          ENVHEAVEN_UI_ONLY_DAEMON_PORT: String(existingLock!.daemonPort),
+        };
+        const uiChild = spawn(
+          process.execPath,
+          [process.argv[1]!, "offiline-web-ui"],
+          { detached: true, stdio: ["ignore", "ignore", "ignore"], env: uiSpawnEnv },
+        );
+        uiChild.unref();
+
+        const uiLock = await waitForLockFile(18000, 300, true);
+        const lanIp = getLanIp();
+        writeOutput(
+          {
+            mode: "daemon",
+            already_running: true,
+            port: existingLock!.daemonPort,
+            daemonUrls: buildUrlList(existingLock!.daemonPort, lanIp),
+            uiUrls: uiLock?.uiPort ? buildUrlList(uiLock.uiPort, lanIp) : [],
+            diagnostics: [
+              createDiagnostic("info", "daemon-already-running", `EnvHeaven daemon already running on port ${String(existingLock!.daemonPort)}.`),
+              ...(uiLock?.uiPort
+                ? [createDiagnostic("info", "offiline-web-ui-started", `EnvHeaven offline UI started on port ${String(uiLock.uiPort)}.`)]
+                : []),
+            ],
+          },
+          0,
+          options,
+        );
+        return;
+      }
+
       const lanIp = getLanIp();
-      const daemonUrls = buildUrlList(existingLock!.daemonPort, lanIp);
-      const uiUrls = existingLock!.uiPort ? buildUrlList(existingLock!.uiPort, lanIp) : [];
       writeOutput(
         {
           mode: "daemon",
           already_running: true,
           port: existingLock!.daemonPort,
-          daemonUrls,
-          uiUrls,
+          daemonUrls: buildUrlList(existingLock!.daemonPort, lanIp),
+          uiUrls: existingLock!.uiPort ? buildUrlList(existingLock!.uiPort, lanIp) : [],
           diagnostics: [
             createDiagnostic("info", "daemon-already-running", `EnvHeaven daemon already running on port ${String(existingLock!.daemonPort)}.`),
           ],
@@ -493,7 +529,9 @@ async function promptYesNo(prompt: string): Promise<boolean> {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     rl.question(prompt, (answer) => {
       rl.close();
-      resolve(answer.trim().toLowerCase() === "y" || answer.trim().toLowerCase() === "yes");
+      const trimmed = answer.trim().toLowerCase();
+      // (Y/n) semantics: empty input or "y"/"yes" = true; explicit "n"/"no" = false
+      resolve(trimmed !== "n" && trimmed !== "no");
     });
   });
 }
