@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import * as readline from "node:readline";
 import os from "node:os";
 import path from "node:path";
 import { parseGlobalFlags } from "./cli-flags";
@@ -22,6 +24,8 @@ import { spawnExecution } from "./execution/spawn";
 import { launchOffilineWebUi } from "./offiline/launcher";
 import { loadPlugin } from "./plugins/loader";
 import { EnvHeavenStateStore } from "./state/store";
+import { loadPreferences, savePreferences } from "./state/preferences";
+import { readLockFile, writeLockFile, clearLockFile, isPortOpen, waitForLockFile } from "./state/lock";
 import type {
   ArtifactExecutionPlan,
   CommandIntent,
@@ -42,6 +46,8 @@ const PACKAGE_VERSION: string = (() => {
     return "0.1.0";
   }
 })();
+
+const BG_MODE = process.env["ENVHEAVEN_BG_MODE"] === "1";
 
 async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
@@ -64,7 +70,11 @@ async function main(): Promise<void> {
       writeOutput(
         {
           diagnostics: [
-            createDiagnostic("error", "json-request-missing", "--json-request requires a JSON string argument, e.g. '{\"kind\":\"run\",\"target\":\"local\"}'."),
+            createDiagnostic(
+              "error",
+              "json-request-missing",
+              "--json-request requires a JSON string argument, e.g. '{\"kind\":\"run\",\"target\":\"local\"}'.",
+            ),
           ],
         },
         1,
@@ -97,21 +107,98 @@ async function main(): Promise<void> {
   const stateStore = new EnvHeavenStateStore();
   await stateStore.rememberRepo(repoRoot);
 
+  // ─── DAEMON (bare "envheaven") ────────────────────────────────────────────
   if (intent.kind === "daemon") {
-    const server = await startDaemon(repoRoot, 0, stateStore);
-    const address = server.address();
-    const port = typeof address === "object" && address ? address.port : null;
+    if (BG_MODE) {
+      // Background server mode: run in-process, write lock file, stay alive
+      const server = await startDaemon(repoRoot, 0, stateStore, PACKAGE_VERSION);
+      const address = server.address();
+      const daemonPort = typeof address === "object" && address ? address.port : 0;
+
+      await writeLockFile({ daemonPort, uiPort: null, startedAt: new Date().toISOString() });
+
+      process.once("SIGTERM", () => {
+        void clearLockFile().then(() => server.close(() => process.exit(0)));
+      });
+      process.once("SIGINT", () => {
+        void clearLockFile().then(() => server.close(() => process.exit(0)));
+      });
+      // Keep alive via the HTTP server's event loop reference — no explicit return needed
+      return;
+    }
+
+    // ── First-run interactive setup ──────────────────────────────────────────
+    const prefs = await loadPreferences();
+    if (prefs === null) {
+      // First time — ask about auto-start preference
+      const autoStart = await promptYesNo(
+        "  EnvHeaven — first-run setup\n" +
+          "  ─────────────────────────────────────────\n" +
+          "  Would you like to auto-start the offline UI when the daemon starts? [y/N] ",
+      );
+      await savePreferences({ autoStartUi: autoStart });
+      process.stdout.write(
+        autoStart
+          ? "  Saved: the offline UI will auto-start with the daemon.\n"
+          : "  Saved: offline UI will not auto-start (run `envheaven offiline-web-ui` anytime).\n",
+      );
+    }
+
+    // ── Check if daemon already running ──────────────────────────────────────
+    const existingLock = await readLockFile();
+    if (existingLock && existingLock.daemonPort > 0 && (await isPortOpen(existingLock.daemonPort))) {
+      const lanIp = getLanIp();
+      const daemonUrls = buildUrlList(existingLock.daemonPort, lanIp);
+      const uiUrls = existingLock.uiPort ? buildUrlList(existingLock.uiPort, lanIp) : [];
+      writeOutput(
+        {
+          mode: "daemon",
+          already_running: true,
+          port: existingLock.daemonPort,
+          daemonUrls,
+          uiUrls,
+          diagnostics: [
+            createDiagnostic("info", "daemon-already-running", `EnvHeaven daemon already running on port ${String(existingLock.daemonPort)}.`),
+          ],
+        },
+        0,
+        options,
+      );
+      return;
+    }
+
+    // ── Spawn background daemon ───────────────────────────────────────────────
+    const child = spawn(process.execPath, process.argv.slice(1), {
+      detached: true,
+      stdio: ["ignore", "ignore", "ignore"],
+      env: { ...process.env, ENVHEAVEN_BG_MODE: "1" },
+    });
+    child.unref();
+
+    const lock = await waitForLockFile(15000, 300);
+    if (!lock) {
+      writeOutput(
+        {
+          diagnostics: [
+            createDiagnostic("error", "daemon-start-timeout", "EnvHeaven daemon did not become reachable within 15 seconds."),
+          ],
+        },
+        1,
+        options,
+      );
+      return;
+    }
+
     const lanIp = getLanIp();
-    const daemonUrls = buildUrlList(port, lanIp);
+    const daemonUrls = buildUrlList(lock.daemonPort, lanIp);
     writeOutput(
       {
         mode: "daemon",
-        port,
+        port: lock.daemonPort,
         daemonUrls,
         diagnostics: [
-          createDiagnostic("info", "daemon-started", `EnvHeaven daemon listening on port ${String(port)}.`),
-          createDiagnostic("info", "offiline-web-ui-hint", "Hint: `envheaven offiline-web-ui` is an option."),
-          createDiagnostic("info", "offiline-web-ui-tip", "Tip: run `envheaven offiline-web-ui` to install and launch the offline UI."),
+          createDiagnostic("info", "daemon-started", `EnvHeaven daemon started on port ${String(lock.daemonPort)}.`),
+          createDiagnostic("info", "offiline-web-ui-hint", "Tip: run `envheaven offiline-web-ui` to launch the offline UI."),
         ],
       },
       0,
@@ -120,35 +207,100 @@ async function main(): Promise<void> {
     return;
   }
 
+  // ─── VERSION ──────────────────────────────────────────────────────────────
   if (intent.kind === "version") {
     process.stdout.write(`EnvHeaven v${PACKAGE_VERSION}\n`);
     process.exitCode = 0;
     return;
   }
 
+  // ─── OFFILINE-WEB-UI ──────────────────────────────────────────────────────
   if (intent.kind === "offiline-web-ui") {
-    const daemonServer = await startDaemon(repoRoot, 0, stateStore);
-    const daemonAddress = daemonServer.address();
-    const daemonPort = typeof daemonAddress === "object" && daemonAddress ? daemonAddress.port : null;
-    const daemonLoopbackUrl = `http://127.0.0.1:${String(daemonPort)}`;
-    const launched = await launchOffilineWebUi(repoRoot, daemonLoopbackUrl, stateStore);
-    installServerSignalHandlers([daemonServer, launched.server]);
+    if (BG_MODE) {
+      // Background server mode: run in-process, write lock file, stay alive
+      const daemonServer = await startDaemon(repoRoot, 0, stateStore, PACKAGE_VERSION);
+      const daemonAddress = daemonServer.address();
+      const daemonPort = typeof daemonAddress === "object" && daemonAddress ? daemonAddress.port : 0;
+      const daemonLoopbackUrl = `http://127.0.0.1:${String(daemonPort)}`;
 
-    const uiAddress = launched.server.address();
-    const uiPort = typeof uiAddress === "object" && uiAddress ? uiAddress.port : null;
+      const launched = await launchOffilineWebUi(repoRoot, daemonLoopbackUrl, stateStore);
+      const uiAddress = launched.server.address();
+      const uiPort = typeof uiAddress === "object" && uiAddress ? uiAddress.port : null;
+
+      await writeLockFile({
+        daemonPort,
+        uiPort: uiPort ?? null,
+        startedAt: new Date().toISOString(),
+      });
+
+      const cleanup = () => {
+        void clearLockFile().then(() => {
+          daemonServer.close(() => undefined);
+          launched.server.close(() => process.exit(0));
+        });
+      };
+      process.once("SIGTERM", cleanup);
+      process.once("SIGINT", cleanup);
+      return;
+    }
+
+    // ── Check if already running ──────────────────────────────────────────────
+    const existingLock = await readLockFile();
+    if (
+      existingLock &&
+      existingLock.daemonPort > 0 &&
+      (await isPortOpen(existingLock.daemonPort)) &&
+      existingLock.uiPort &&
+      (await isPortOpen(existingLock.uiPort))
+    ) {
+      const lanIp = getLanIp();
+      writeOutput(
+        {
+          mode: "offiline-web-ui",
+          already_running: true,
+          daemonUrls: buildUrlList(existingLock.daemonPort, lanIp),
+          uiUrls: buildUrlList(existingLock.uiPort, lanIp),
+          diagnostics: [
+            createDiagnostic("info", "already-running", "EnvHeaven daemon and offline UI are already running."),
+          ],
+        },
+        0,
+        options,
+      );
+      return;
+    }
+
+    // ── Spawn background process ──────────────────────────────────────────────
+    const child = spawn(process.execPath, process.argv.slice(1), {
+      detached: true,
+      stdio: ["ignore", "ignore", "ignore"],
+      env: { ...process.env, ENVHEAVEN_BG_MODE: "1" },
+    });
+    child.unref();
+
+    const lock = await waitForLockFile(18000, 300);
+    if (!lock) {
+      writeOutput(
+        {
+          diagnostics: [
+            createDiagnostic("error", "offiline-web-ui-start-timeout", "EnvHeaven offline UI did not become reachable within 18 seconds."),
+          ],
+        },
+        1,
+        options,
+      );
+      return;
+    }
+
     const lanIp = getLanIp();
-    const daemonUrls = buildUrlList(daemonPort, lanIp);
-    const uiUrls = buildUrlList(uiPort, lanIp);
-
     writeOutput(
       {
         mode: "offiline-web-ui",
-        source: launched.source,
-        daemonUrls,
-        uiUrls,
+        daemonUrls: buildUrlList(lock.daemonPort, lanIp),
+        uiUrls: lock.uiPort ? buildUrlList(lock.uiPort, lanIp) : [],
         diagnostics: [
-          createDiagnostic("info", "daemon-started", `EnvHeaven daemon listening on port ${String(daemonPort)}.`),
-          createDiagnostic("info", "offiline-web-ui-started", `EnvHeaven offiline web UI listening on port ${String(uiPort)}.`),
+          createDiagnostic("info", "daemon-started", `EnvHeaven daemon listening on port ${String(lock.daemonPort)}.`),
+          createDiagnostic("info", "offiline-web-ui-started", `EnvHeaven offline UI listening on port ${String(lock.uiPort ?? 0)}.`),
         ],
       },
       0,
@@ -157,6 +309,7 @@ async function main(): Promise<void> {
     return;
   }
 
+  // ─── RUN / DEPLOY (require a target) ─────────────────────────────────────
   if (!intent.target) {
     writeOutput(
       {
@@ -193,10 +346,13 @@ async function main(): Promise<void> {
     diagnostics.push(...selection.diagnostics);
     if (!hasErrors(diagnostics)) {
       plan.selectedArtifacts = selection.artifactNames;
-      plan.artifactExecutions = plan.artifactExecutions.filter((entry) => selection.artifactNames.includes(entry.artifactName));
+      plan.artifactExecutions = plan.artifactExecutions.filter((entry) =>
+        selection.artifactNames.includes(entry.artifactName),
+      );
       plan.execution =
         plan.repoExecutions.find((repoExecution) => repoExecution.status === "runnable")?.execution ??
-        plan.artifactExecutions.find((artifactExecution) => artifactExecution.status === "runnable")?.execution ?? null;
+        plan.artifactExecutions.find((artifactExecution) => artifactExecution.status === "runnable")?.execution ??
+        null;
       plan.pluginPackage = plan.execution?.pluginPackage;
     }
 
@@ -217,7 +373,9 @@ async function main(): Promise<void> {
     diagnostics.push(...selection.diagnostics);
     if (!hasErrors(diagnostics)) {
       plan.selectedArtifacts = selection.artifactNames;
-      plan.artifactExecutions = plan.artifactExecutions.filter((entry) => selection.artifactNames.includes(entry.artifactName));
+      plan.artifactExecutions = plan.artifactExecutions.filter((entry) =>
+        selection.artifactNames.includes(entry.artifactName),
+      );
       plan.execution =
         plan.repoExecutions.find((repoExecution) => repoExecution.status === "runnable")?.execution ??
         plan.artifactExecutions.find((artifactExecution) => artifactExecution.status === "runnable")?.execution ??
@@ -250,18 +408,13 @@ async function main(): Promise<void> {
       if (inspected.diagnostics) {
         diagnostics.push(...inspected.diagnostics);
       }
-
       pluginDetails = inspected.details;
     }
 
     if (!hasErrors(diagnostics)) {
       if (!loadedPlugin.plugin.execute) {
         diagnostics.push(
-          createDiagnostic(
-            "error",
-            "plugin-execute-missing",
-            `Plugin "${plan.pluginPackage}" does not export execute().`,
-          ),
+          createDiagnostic("error", "plugin-execute-missing", `Plugin "${plan.pluginPackage}" does not export execute().`),
         );
       } else {
         verboseLog("spawn started", options);
@@ -270,11 +423,7 @@ async function main(): Promise<void> {
         if (executed.diagnostics) {
           diagnostics.push(...executed.diagnostics);
         }
-
-        executionResult = {
-          exitCode: executed.exitCode,
-          details: executed.details,
-        };
+        executionResult = { exitCode: executed.exitCode, details: executed.details };
       }
     }
   }
@@ -293,6 +442,18 @@ async function main(): Promise<void> {
   );
 }
 
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+async function promptYesNo(prompt: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(prompt, (answer) => {
+      rl.close();
+      resolve(answer.trim().toLowerCase() === "y" || answer.trim().toLowerCase() === "yes");
+    });
+  });
+}
+
 function parseJsonRequestArg(jsonString: string): { intent: CommandIntent | null; diagnostics: Diagnostic[] } {
   let parsed: Record<string, unknown>;
   try {
@@ -301,7 +462,11 @@ function parseJsonRequestArg(jsonString: string): { intent: CommandIntent | null
     return {
       intent: null,
       diagnostics: [
-        createDiagnostic("error", "json-request-parse-error", `--json-request argument is not valid JSON: ${jsonString}`),
+        createDiagnostic(
+          "error",
+          "json-request-parse-error",
+          `--json-request argument is not valid JSON: ${jsonString}`,
+        ),
       ],
     };
   }
@@ -310,7 +475,11 @@ function parseJsonRequestArg(jsonString: string): { intent: CommandIntent | null
     return {
       intent: null,
       diagnostics: [
-        createDiagnostic("error", "json-request-missing-kind", '--json-request JSON must contain a "kind" field (e.g. "run", "deploy", "daemon").'),
+        createDiagnostic(
+          "error",
+          "json-request-missing-kind",
+          '--json-request JSON must contain a "kind" field (e.g. "run", "deploy", "daemon").',
+        ),
       ],
     };
   }
@@ -321,7 +490,11 @@ function parseJsonRequestArg(jsonString: string): { intent: CommandIntent | null
     return {
       intent: null,
       diagnostics: [
-        createDiagnostic("error", "json-request-invalid-kind", `--json-request "kind" must be one of: daemon, run, deploy, offiline-web-ui. Got: "${kind}".`),
+        createDiagnostic(
+          "error",
+          "json-request-invalid-kind",
+          `--json-request "kind" must be one of: daemon, run, deploy, offiline-web-ui. Got: "${kind}".`,
+        ),
       ],
     };
   }
@@ -341,17 +514,6 @@ function parseJsonRequestArg(jsonString: string): { intent: CommandIntent | null
   };
 }
 
-function installServerSignalHandlers(servers: Array<{ close(callback: (error?: Error | undefined) => void): void }>): void {
-  const closeAll = () => {
-    for (const server of servers) {
-      server.close(() => undefined);
-    }
-  };
-
-  process.once("SIGINT", closeAll);
-  process.once("SIGTERM", closeAll);
-}
-
 function getLanIp(): string | null {
   const interfaces = os.networkInterfaces();
   for (const ifaces of Object.values(interfaces)) {
@@ -367,10 +529,7 @@ function getLanIp(): string | null {
 
 function buildUrlList(port: number | null, lanIp: string | null): string[] {
   if (port === null) return [];
-  const urls = [
-    `http://localhost:${String(port)}`,
-    `http://127.0.0.1:${String(port)}`,
-  ];
+  const urls = [`http://localhost:${String(port)}`, `http://127.0.0.1:${String(port)}`];
   if (lanIp) {
     urls.push(`http://${lanIp}:${String(port)}`);
   }
@@ -407,20 +566,10 @@ async function executeDeployPlan(
     const filteredExecution = applyPnpmRecursiveFilter(repoExecution.execution, plan.artifactExecutions, plan.selectedArtifacts);
     const result = await executePlanItem(repoExecution.name, filteredExecution, runtimeContext, diagnostics);
     verboseLog(`deploy step done: ${repoExecution.name} (exit ${String(result["exitCode"] ?? 0)})`, options);
-    repoResults.push({
-      name: repoExecution.name,
-      status: repoExecution.status,
-      result,
-    });
+    repoResults.push({ name: repoExecution.name, status: repoExecution.status, result });
     if ((result.exitCode ?? 0) !== 0) {
       exitCode = result.exitCode as number;
-      return {
-        exitCode,
-        payload: {
-          repoExecutions: repoResults,
-          artifactExecutions: artifactResults,
-        },
-      };
+      return { exitCode, payload: { repoExecutions: repoResults, artifactExecutions: artifactResults } };
     }
   }
 
@@ -449,13 +598,7 @@ async function executeDeployPlan(
     }
   }
 
-  return {
-    exitCode,
-    payload: {
-      repoExecutions: repoResults,
-      artifactExecutions: artifactResults,
-    },
-  };
+  return { exitCode, payload: { repoExecutions: repoResults, artifactExecutions: artifactResults } };
 }
 
 async function hydrateArtifactExecution(
@@ -465,9 +608,7 @@ async function hydrateArtifactExecution(
   stateStore: EnvHeavenStateStore,
   deployTarget: string,
 ): Promise<ExecutionSpec | null> {
-  if (!artifactExecution.execution) {
-    return null;
-  }
+  if (!artifactExecution.execution) return null;
 
   const packageDirectory = artifactExecution.repoCloneFolderPath
     ? path.resolve(repoRoot, artifactExecution.repoCloneFolderPath)
@@ -550,9 +691,7 @@ async function executeArtifactDeploy(
     deployTarget === "production-01" &&
     hydratedExecution.command === "npm" &&
     hydratedExecution.args[0] === "publish";
-
   const isLocalGlobalInstall_ = isLocalGlobalInstall(hydratedExecution.command, hydratedExecution.args);
-
   const needsVersionedInstall = isProductionPublish || isLocalGlobalInstall_;
 
   const packageDirectory = artifactExecution.repoCloneFolderPath
@@ -586,10 +725,7 @@ async function executeArtifactDeploy(
 
   const executionToRun: ExecutionSpec = {
     ...hydratedExecution,
-    env: {
-      ...hydratedExecution.env,
-      EH_ARTIFACT_VERSION: resolvedVersion.value,
-    },
+    env: { ...hydratedExecution.env, EH_ARTIFACT_VERSION: resolvedVersion.value },
   };
 
   const applyVersion = withTemporaryPackageVersion;
@@ -616,7 +752,12 @@ async function executeArtifactDeploy(
     payload.versionRegistry = updatedVersion;
 
     if (packageDirectory) {
-      const tagResult = await createArtifactDeployTag(runtimeContext.repoRoot, packageDirectory, resolvedVersion.value, deployTarget);
+      const tagResult = await createArtifactDeployTag(
+        runtimeContext.repoRoot,
+        packageDirectory,
+        resolvedVersion.value,
+        deployTarget,
+      );
       payload.tag = tagResult;
       if (tagResult.message) {
         diagnostics.push(createDiagnostic("warning", "artifact-tag-warning", tagResult.message));
@@ -624,20 +765,17 @@ async function executeArtifactDeploy(
     }
   }
 
-  return {
-    exitCode: (result.exitCode as number) ?? 1,
-    payload,
-  };
+  return { exitCode: (result.exitCode as number) ?? 1, payload };
 }
 
 function materializeDynamicVersionToken(value: string, artifactName: string, resolvedVersion: string): string {
   if (value === "dynamic-artifact-version") {
     return resolvedVersion;
   }
-
   return value.replace(
     /\{\{\s*GetDynamicArtifactVersionOf\('([^']+)'\)\s*\}\}/g,
-    (_match, tokenArtifactName: string) => tokenArtifactName === artifactName ? resolvedVersion : _match,
+    (_match, tokenArtifactName: string) =>
+      tokenArtifactName === artifactName ? resolvedVersion : _match,
   );
 }
 
@@ -647,18 +785,14 @@ async function executePlanItem(
   runtimeContext: PluginRuntimeContext,
   diagnostics: Diagnostic[],
 ): Promise<Record<string, unknown>> {
-  if (!execution) {
-    return { skipped: true, exitCode: 0 };
-  }
+  if (!execution) return { skipped: true, exitCode: 0 };
 
   if (execution.pluginPackage) {
     const loadedPlugin = await loadPlugin(execution.pluginPackage, runtimeContext.repoRoot);
     diagnostics.push(...loadedPlugin.diagnostics);
     if (loadedPlugin.plugin.inspect) {
       const inspected = await loadedPlugin.plugin.inspect(runtimeContext);
-      if (inspected.diagnostics) {
-        diagnostics.push(...inspected.diagnostics);
-      }
+      if (inspected.diagnostics) diagnostics.push(...inspected.diagnostics);
     }
 
     if (!loadedPlugin.plugin.execute) {
@@ -673,10 +807,10 @@ async function executePlanItem(
         kind: "run",
         requestedTarget: "default",
         resolvedTarget: "default",
-        targetResolutionTrace: ["default"],
+        targetResolutionTrace: [],
         mergeOrder: [],
         selectedArtifacts: [],
-        diagnostics,
+        diagnostics: [],
         trace: [],
         repoExecutions: [],
         artifactExecutions: [],
@@ -686,33 +820,19 @@ async function executePlanItem(
       },
       runtimeContext,
     );
-    if (executed.diagnostics) {
-      diagnostics.push(...executed.diagnostics);
-    }
 
-    return {
-      name,
-      exitCode: executed.exitCode,
-      details: executed.details,
-    };
+    if (executed.diagnostics) diagnostics.push(...executed.diagnostics);
+    return { exitCode: executed.exitCode, details: executed.details };
   }
 
-  const spawned = await runtimeContext.spawnExecution({
-    command: execution.command ?? "",
+  if (!execution.command) return { skipped: true, exitCode: 0 };
+
+  const result = await runtimeContext.spawnExecution({
+    command: execution.command,
     args: execution.args,
     env: execution.env,
     cwd: execution.cwd,
   });
 
-  if (spawned.exitCode !== 0) {
-    diagnostics.push(
-      createDiagnostic("error", "deploy-step-failed", `Deploy step "${name}" failed with exit code ${String(spawned.exitCode)}.`),
-    );
-  }
-
-  return {
-    name,
-    exitCode: spawned.exitCode,
-    signal: spawned.signal,
-  };
+  return { exitCode: result.exitCode };
 }
