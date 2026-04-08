@@ -115,7 +115,20 @@ async function main(): Promise<void> {
       const address = server.address();
       const daemonPort = typeof address === "object" && address ? address.port : 0;
 
-      await writeLockFile({ daemonPort, uiPort: null, startedAt: new Date().toISOString() });
+      // Honor autoStartUi preference in the background process too
+      let uiPort: number | null = null;
+      const bgPrefs = await loadPreferences();
+      if (bgPrefs?.autoStartUi) {
+        try {
+          const launched = await launchOffilineWebUi(repoRoot, `http://127.0.0.1:${String(daemonPort)}`, stateStore);
+          const uiAddr = launched.server.address();
+          uiPort = typeof uiAddr === "object" && uiAddr ? uiAddr.port : null;
+        } catch {
+          // non-fatal — daemon still starts even if UI fails
+        }
+      }
+
+      await writeLockFile({ daemonPort, uiPort, startedAt: new Date().toISOString() });
 
       process.once("SIGTERM", () => {
         void clearLockFile().then(() => server.close(() => process.exit(0)));
@@ -123,12 +136,12 @@ async function main(): Promise<void> {
       process.once("SIGINT", () => {
         void clearLockFile().then(() => server.close(() => process.exit(0)));
       });
-      // Keep alive via the HTTP server's event loop reference — no explicit return needed
+      // Keep alive via the HTTP server's event loop reference
       return;
     }
 
     // ── First-run interactive setup ──────────────────────────────────────────
-    const prefs = await loadPreferences();
+    let prefs = await loadPreferences();
     if (prefs === null) {
       // First time — ask about auto-start preference
       const autoStart = await promptYesNo(
@@ -137,6 +150,7 @@ async function main(): Promise<void> {
           "  Would you like to auto-start the offline UI when the daemon starts? [y/N] ",
       );
       await savePreferences({ autoStartUi: autoStart });
+      prefs = { autoStartUi: autoStart };
       process.stdout.write(
         autoStart
           ? "  Saved: the offline UI will auto-start with the daemon.\n"
@@ -146,19 +160,20 @@ async function main(): Promise<void> {
 
     // ── Check if daemon already running ──────────────────────────────────────
     const existingLock = await readLockFile();
-    if (existingLock && existingLock.daemonPort > 0 && (await isPortOpen(existingLock.daemonPort))) {
+    const daemonAlive = !!(existingLock && existingLock.daemonPort > 0 && (await isPortOpen(existingLock.daemonPort)));
+    if (daemonAlive) {
       const lanIp = getLanIp();
-      const daemonUrls = buildUrlList(existingLock.daemonPort, lanIp);
-      const uiUrls = existingLock.uiPort ? buildUrlList(existingLock.uiPort, lanIp) : [];
+      const daemonUrls = buildUrlList(existingLock!.daemonPort, lanIp);
+      const uiUrls = existingLock!.uiPort ? buildUrlList(existingLock!.uiPort, lanIp) : [];
       writeOutput(
         {
           mode: "daemon",
           already_running: true,
-          port: existingLock.daemonPort,
+          port: existingLock!.daemonPort,
           daemonUrls,
           uiUrls,
           diagnostics: [
-            createDiagnostic("info", "daemon-already-running", `EnvHeaven daemon already running on port ${String(existingLock.daemonPort)}.`),
+            createDiagnostic("info", "daemon-already-running", `EnvHeaven daemon already running on port ${String(existingLock!.daemonPort)}.`),
           ],
         },
         0,
@@ -167,7 +182,7 @@ async function main(): Promise<void> {
       return;
     }
 
-    // ── Spawn background daemon ───────────────────────────────────────────────
+    // ── Spawn background daemon (+ optional UI) ───────────────────────────────
     const child = spawn(process.execPath, process.argv.slice(1), {
       detached: true,
       stdio: ["ignore", "ignore", "ignore"],
@@ -175,12 +190,14 @@ async function main(): Promise<void> {
     });
     child.unref();
 
-    const lock = await waitForLockFile(15000, 300);
+    // Wait for daemon; if autoStartUi also wait for uiPort
+    const requireUi = prefs?.autoStartUi === true;
+    const lock = await waitForLockFile(18000, 300, requireUi);
     if (!lock) {
       writeOutput(
         {
           diagnostics: [
-            createDiagnostic("error", "daemon-start-timeout", "EnvHeaven daemon did not become reachable within 15 seconds."),
+            createDiagnostic("error", "daemon-start-timeout", "EnvHeaven daemon did not become reachable within 18 seconds."),
           ],
         },
         1,
@@ -190,15 +207,18 @@ async function main(): Promise<void> {
     }
 
     const lanIp = getLanIp();
-    const daemonUrls = buildUrlList(lock.daemonPort, lanIp);
+    const uiUrls = lock.uiPort ? buildUrlList(lock.uiPort, lanIp) : [];
     writeOutput(
       {
         mode: "daemon",
         port: lock.daemonPort,
-        daemonUrls,
+        daemonUrls: buildUrlList(lock.daemonPort, lanIp),
+        uiUrls,
         diagnostics: [
           createDiagnostic("info", "daemon-started", `EnvHeaven daemon started on port ${String(lock.daemonPort)}.`),
-          createDiagnostic("info", "offiline-web-ui-hint", "Tip: run `envheaven offiline-web-ui` to launch the offline UI."),
+          ...(lock.uiPort
+            ? [createDiagnostic("info", "offiline-web-ui-started", `EnvHeaven offline UI started on port ${String(lock.uiPort)}.`)]
+            : [createDiagnostic("info", "offiline-web-ui-hint", "Tip: run `envheaven offiline-web-ui` to launch the offline UI.")]),
         ],
       },
       0,
@@ -217,7 +237,28 @@ async function main(): Promise<void> {
   // ─── OFFILINE-WEB-UI ──────────────────────────────────────────────────────
   if (intent.kind === "offiline-web-ui") {
     if (BG_MODE) {
-      // Background server mode: run in-process, write lock file, stay alive
+      const uiOnlyDaemonPortStr = process.env["ENVHEAVEN_UI_ONLY_DAEMON_PORT"];
+
+      if (uiOnlyDaemonPortStr) {
+        // UI-only mode: reuse already-running daemon, only start UI
+        const existingDaemonPort = parseInt(uiOnlyDaemonPortStr, 10);
+        const daemonLoopbackUrl = `http://127.0.0.1:${String(existingDaemonPort)}`;
+        const launched = await launchOffilineWebUi(repoRoot, daemonLoopbackUrl, stateStore);
+        const uiAddress = launched.server.address();
+        const uiPort = typeof uiAddress === "object" && uiAddress ? uiAddress.port : null;
+
+        // Write updated lock with uiPort (daemon port preserved)
+        await writeLockFile({ daemonPort: existingDaemonPort, uiPort: uiPort ?? null, startedAt: new Date().toISOString() });
+
+        const cleanup = () => {
+          void clearLockFile().then(() => launched.server.close(() => process.exit(0)));
+        };
+        process.once("SIGTERM", cleanup);
+        process.once("SIGINT", cleanup);
+        return;
+      }
+
+      // Full mode: start daemon + UI
       const daemonServer = await startDaemon(repoRoot, 0, stateStore, PACKAGE_VERSION);
       const daemonAddress = daemonServer.address();
       const daemonPort = typeof daemonAddress === "object" && daemonAddress ? daemonAddress.port : 0;
@@ -227,11 +268,7 @@ async function main(): Promise<void> {
       const uiAddress = launched.server.address();
       const uiPort = typeof uiAddress === "object" && uiAddress ? uiAddress.port : null;
 
-      await writeLockFile({
-        daemonPort,
-        uiPort: uiPort ?? null,
-        startedAt: new Date().toISOString(),
-      });
+      await writeLockFile({ daemonPort, uiPort: uiPort ?? null, startedAt: new Date().toISOString() });
 
       const cleanup = () => {
         void clearLockFile().then(() => {
@@ -244,22 +281,20 @@ async function main(): Promise<void> {
       return;
     }
 
-    // ── Check if already running ──────────────────────────────────────────────
+    // ── Foreground: check per-service if already running ─────────────────────
     const existingLock = await readLockFile();
-    if (
-      existingLock &&
-      existingLock.daemonPort > 0 &&
-      (await isPortOpen(existingLock.daemonPort)) &&
-      existingLock.uiPort &&
-      (await isPortOpen(existingLock.uiPort))
-    ) {
+    const daemonAliveUi = !!(existingLock && existingLock.daemonPort > 0 && (await isPortOpen(existingLock.daemonPort)));
+    const uiAlive = !!(daemonAliveUi && existingLock!.uiPort && existingLock!.uiPort > 0 && (await isPortOpen(existingLock!.uiPort)));
+
+    if (daemonAliveUi && uiAlive) {
+      // Both already running — report and exit
       const lanIp = getLanIp();
       writeOutput(
         {
           mode: "offiline-web-ui",
           already_running: true,
-          daemonUrls: buildUrlList(existingLock.daemonPort, lanIp),
-          uiUrls: buildUrlList(existingLock.uiPort, lanIp),
+          daemonUrls: buildUrlList(existingLock!.daemonPort, lanIp),
+          uiUrls: buildUrlList(existingLock!.uiPort!, lanIp),
           diagnostics: [
             createDiagnostic("info", "already-running", "EnvHeaven daemon and offline UI are already running."),
           ],
@@ -270,15 +305,22 @@ async function main(): Promise<void> {
       return;
     }
 
-    // ── Spawn background process ──────────────────────────────────────────────
+    // ── Spawn background process (UI-only or full) ────────────────────────────
+    const spawnEnv: NodeJS.ProcessEnv = { ...process.env, ENVHEAVEN_BG_MODE: "1" };
+    if (daemonAliveUi && !uiAlive) {
+      // Daemon already running — only launch missing UI
+      spawnEnv["ENVHEAVEN_UI_ONLY_DAEMON_PORT"] = String(existingLock!.daemonPort);
+    }
+
     const child = spawn(process.execPath, process.argv.slice(1), {
       detached: true,
       stdio: ["ignore", "ignore", "ignore"],
-      env: { ...process.env, ENVHEAVEN_BG_MODE: "1" },
+      env: spawnEnv,
     });
     child.unref();
 
-    const lock = await waitForLockFile(18000, 300);
+    // Wait until lock file has both daemonPort and uiPort reachable
+    const lock = await waitForLockFile(18000, 300, true);
     if (!lock) {
       writeOutput(
         {
@@ -299,8 +341,10 @@ async function main(): Promise<void> {
         daemonUrls: buildUrlList(lock.daemonPort, lanIp),
         uiUrls: lock.uiPort ? buildUrlList(lock.uiPort, lanIp) : [],
         diagnostics: [
-          createDiagnostic("info", "daemon-started", `EnvHeaven daemon listening on port ${String(lock.daemonPort)}.`),
-          createDiagnostic("info", "offiline-web-ui-started", `EnvHeaven offline UI listening on port ${String(lock.uiPort ?? 0)}.`),
+          ...(daemonAliveUi
+            ? [createDiagnostic("info", "daemon-reused", `EnvHeaven daemon reused on port ${String(lock.daemonPort)}.`)]
+            : [createDiagnostic("info", "daemon-started", `EnvHeaven daemon started on port ${String(lock.daemonPort)}.`)]),
+          createDiagnostic("info", "offiline-web-ui-started", `EnvHeaven offline UI started on port ${String(lock.uiPort ?? 0)}.`),
         ],
       },
       0,

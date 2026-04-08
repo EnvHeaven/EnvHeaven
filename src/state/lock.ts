@@ -62,16 +62,19 @@ export function isPortOpen(port: number, host = "127.0.0.1"): Promise<boolean> {
 
 /**
  * Poll until the lock file exists AND the daemon port is reachable, or timeout.
+ * Set `requireUiPort = true` to also wait until `uiPort` is present and reachable.
  */
 export async function waitForLockFile(
   timeoutMs = 18000,
   pollIntervalMs = 300,
+  requireUiPort = false,
 ): Promise<RunLockFile | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const lock = await readLockFile();
     if (lock && lock.daemonPort > 0 && (await isPortOpen(lock.daemonPort))) {
-      return lock;
+      if (!requireUiPort) return lock;
+      if (lock.uiPort && lock.uiPort > 0 && (await isPortOpen(lock.uiPort))) return lock;
     }
     await new Promise<void>((resolve) => setTimeout(resolve, pollIntervalMs));
   }
