@@ -465,8 +465,8 @@ export async function startDaemon(
           description: typeof payload.description === "string" ? payload.description : "",
           runLabel: typeof payload.runLabel === "string" ? payload.runLabel : "Run",
           stopLabel: typeof payload.stopLabel === "string" ? payload.stopLabel : "Stop",
-          successHelpers: Array.isArray(payload.successHelpers) ? (payload.successHelpers as ActionDefinition["successHelpers"]) : [],
-          failHelpers: Array.isArray(payload.failHelpers) ? (payload.failHelpers as ActionDefinition["failHelpers"]) : [],
+          successHelpers: normalizeHelperArray(payload.successHelpers),
+          failHelpers: normalizeHelperArray(payload.failHelpers),
         };
 
         await saveAction(selectedRepoRoot, action);
@@ -589,6 +589,19 @@ async function buildVersionPayload(
         };
       }),
   );
+}
+
+function normalizeHelperArray(raw: unknown): ActionDefinition["successHelpers"] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((h): h is ActionDefinition["successHelpers"][number] => {
+    if (typeof h !== "object" || h === null) return false;
+    const entry = h as Record<string, unknown>;
+    return (
+      (entry["kind"] === "open-url" || entry["kind"] === "copy-text") &&
+      typeof entry["label"] === "string" &&
+      typeof entry["value"] === "string"
+    );
+  });
 }
 
 async function readJsonBody(request: http.IncomingMessage): Promise<ParsedRequestBody> {

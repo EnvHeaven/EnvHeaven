@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import net from "node:net";
-import os from "node:os";
 import path from "node:path";
+import type { EnvHeavenPaths } from "./store";
 
 export interface RunLockFile {
   daemonPort: number;
@@ -9,13 +9,13 @@ export interface RunLockFile {
   startedAt: string;
 }
 
-function getLockFilePath(): string {
-  return path.join(os.homedir(), ".envheaven", "running.lock.json");
+export function getLockFilePath(paths: EnvHeavenPaths): string {
+  return path.join(paths.stateDirectory, "running.lock.json");
 }
 
-export async function readLockFile(): Promise<RunLockFile | null> {
+export async function readLockFile(paths: EnvHeavenPaths): Promise<RunLockFile | null> {
   try {
-    const raw = await fs.readFile(getLockFilePath(), "utf8");
+    const raw = await fs.readFile(getLockFilePath(paths), "utf8");
     const parsed = JSON.parse(raw) as Partial<RunLockFile>;
     if (typeof parsed.daemonPort !== "number") return null;
     return {
@@ -28,15 +28,15 @@ export async function readLockFile(): Promise<RunLockFile | null> {
   }
 }
 
-export async function writeLockFile(lock: RunLockFile): Promise<void> {
-  const lockPath = getLockFilePath();
+export async function writeLockFile(paths: EnvHeavenPaths, lock: RunLockFile): Promise<void> {
+  const lockPath = getLockFilePath(paths);
   await fs.mkdir(path.dirname(lockPath), { recursive: true });
   await fs.writeFile(lockPath, JSON.stringify(lock, null, 2) + "\n", "utf8");
 }
 
-export async function clearLockFile(): Promise<void> {
+export async function clearLockFile(paths: EnvHeavenPaths): Promise<void> {
   try {
-    await fs.unlink(getLockFilePath());
+    await fs.unlink(getLockFilePath(paths));
   } catch {
     // ignore if already gone
   }
@@ -61,17 +61,18 @@ export function isPortOpen(port: number, host = "127.0.0.1"): Promise<boolean> {
 }
 
 /**
- * Poll until the lock file exists AND the daemon port is reachable, or timeout.
- * Set `requireUiPort = true` to also wait until `uiPort` is present and reachable.
+ * Poll until lock file exists and daemon port is reachable.
+ * Pass requireUiPort=true to also wait until uiPort is present and reachable.
  */
 export async function waitForLockFile(
+  paths: EnvHeavenPaths,
   timeoutMs = 18000,
   pollIntervalMs = 300,
   requireUiPort = false,
 ): Promise<RunLockFile | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const lock = await readLockFile();
+    const lock = await readLockFile(paths);
     if (lock && lock.daemonPort > 0 && (await isPortOpen(lock.daemonPort))) {
       if (!requireUiPort) return lock;
       if (lock.uiPort && lock.uiPort > 0 && (await isPortOpen(lock.uiPort))) return lock;

@@ -33,7 +33,6 @@ import type {
   ExecutionSpec,
   GlobalOptions,
   PluginRuntimeContext,
-  RepoExecutionPlan,
   ResolvedPlan,
   SupportedTarget,
 } from "./types";
@@ -105,17 +104,15 @@ async function main(): Promise<void> {
 
   const repoRoot = process.cwd();
   const stateStore = new EnvHeavenStateStore();
+  const paths = stateStore.getPaths();
   await stateStore.rememberRepo(repoRoot);
 
-  // ─── DAEMON (bare "envheaven") ────────────────────────────────────────────
   if (intent.kind === "daemon") {
     if (BG_MODE) {
-      // Background server mode: run in-process, write lock file, stay alive
       const server = await startDaemon(repoRoot, 0, stateStore, PACKAGE_VERSION);
       const address = server.address();
       const daemonPort = typeof address === "object" && address ? address.port : 0;
 
-      // Honor autoStartUi preference in the background process too
       let uiPort: number | null = null;
       const bgPrefs = await loadPreferences();
       if (bgPrefs?.autoStartUi) {
@@ -124,26 +121,23 @@ async function main(): Promise<void> {
           const uiAddr = launched.server.address();
           uiPort = typeof uiAddr === "object" && uiAddr ? uiAddr.port : null;
         } catch {
-          // non-fatal — daemon still starts even if UI fails
+          // non-fatal
         }
       }
 
-      await writeLockFile({ daemonPort, uiPort, startedAt: new Date().toISOString() });
+      await writeLockFile(paths, { daemonPort, uiPort, startedAt: new Date().toISOString() });
 
       process.once("SIGTERM", () => {
-        void clearLockFile().then(() => server.close(() => process.exit(0)));
+        void clearLockFile(paths).then(() => server.close(() => process.exit(0)));
       });
       process.once("SIGINT", () => {
-        void clearLockFile().then(() => server.close(() => process.exit(0)));
+        void clearLockFile(paths).then(() => server.close(() => process.exit(0)));
       });
-      // Keep alive via the HTTP server's event loop reference
       return;
     }
 
-    // ── First-run interactive setup ──────────────────────────────────────────
     let prefs = await loadPreferences();
     if (prefs === null) {
-      // First time — ask about auto-start preference; default is YES (Y/n semantics)
       const autoStart = await promptYesNo(
         "  EnvHeaven — first-run setup\n" +
           "  ─────────────────────────────────────────\n" +
@@ -158,27 +152,30 @@ async function main(): Promise<void> {
       );
     }
 
-    // ── Check if daemon already running ──────────────────────────────────────
-    const existingLock = await readLockFile();
+    const existingLock = await readLockFile(paths);
     const daemonAlive = !!(existingLock && existingLock.daemonPort > 0 && (await isPortOpen(existingLock.daemonPort)));
+
     if (daemonAlive) {
       const uiAlreadyUp = !!(existingLock!.uiPort && existingLock!.uiPort > 0 && (await isPortOpen(existingLock!.uiPort)));
 
-      if (prefs?.autoStartUi && !uiAlreadyUp) {
-        // Daemon alive, UI not yet running — start UI only
-        const uiSpawnEnv: NodeJS.ProcessEnv = {
-          ...process.env,
-          ENVHEAVEN_BG_MODE: "1",
-          ENVHEAVEN_UI_ONLY_DAEMON_PORT: String(existingLock!.daemonPort),
-        };
+      if (prefs.autoStartUi && !uiAlreadyUp) {
+        // Daemon alive but UI missing — spawn UI-only
         const uiChild = spawn(
           process.execPath,
           [process.argv[1]!, "offiline-web-ui"],
-          { detached: true, stdio: ["ignore", "ignore", "ignore"], env: uiSpawnEnv },
+          {
+            detached: true,
+            stdio: ["ignore", "ignore", "ignore"],
+            env: {
+              ...process.env,
+              ENVHEAVEN_BG_MODE: "1",
+              ENVHEAVEN_UI_ONLY_DAEMON_PORT: String(existingLock!.daemonPort),
+            },
+          },
         );
         uiChild.unref();
 
-        const uiLock = await waitForLockFile(18000, 300, true);
+        const uiLock = await waitForLockFile(paths, 18000, 300, true);
         const lanIp = getLanIp();
         writeOutput(
           {
@@ -218,7 +215,6 @@ async function main(): Promise<void> {
       return;
     }
 
-    // ── Spawn background daemon (+ optional UI) ───────────────────────────────
     const child = spawn(process.execPath, process.argv.slice(1), {
       detached: true,
       stdio: ["ignore", "ignore", "ignore"],
@@ -226,16 +222,11 @@ async function main(): Promise<void> {
     });
     child.unref();
 
-    // Wait for daemon; if autoStartUi also wait for uiPort
-    const requireUi = prefs?.autoStartUi === true;
-    const lock = await waitForLockFile(18000, 300, requireUi);
+    const requireUi = prefs.autoStartUi === true;
+    const lock = await waitForLockFile(paths, 18000, 300, requireUi);
     if (!lock) {
       writeOutput(
-        {
-          diagnostics: [
-            createDiagnostic("error", "daemon-start-timeout", "EnvHeaven daemon did not become reachable within 18 seconds."),
-          ],
-        },
+        { diagnostics: [createDiagnostic("error", "daemon-start-timeout", "EnvHeaven daemon did not become reachable within 18 seconds.")] },
         1,
         options,
       );
@@ -243,13 +234,12 @@ async function main(): Promise<void> {
     }
 
     const lanIp = getLanIp();
-    const uiUrls = lock.uiPort ? buildUrlList(lock.uiPort, lanIp) : [];
     writeOutput(
       {
         mode: "daemon",
         port: lock.daemonPort,
         daemonUrls: buildUrlList(lock.daemonPort, lanIp),
-        uiUrls,
+        uiUrls: lock.uiPort ? buildUrlList(lock.uiPort, lanIp) : [],
         diagnostics: [
           createDiagnostic("info", "daemon-started", `EnvHeaven daemon started on port ${String(lock.daemonPort)}.`),
           ...(lock.uiPort
@@ -263,34 +253,35 @@ async function main(): Promise<void> {
     return;
   }
 
-  // ─── VERSION ──────────────────────────────────────────────────────────────
   if (intent.kind === "version") {
     process.stdout.write(`EnvHeaven v${PACKAGE_VERSION}\n`);
     process.exitCode = 0;
     return;
   }
 
-  // ─── OFFILINE-WEB-UI ──────────────────────────────────────────────────────
   if (intent.kind === "offiline-web-ui") {
     if (BG_MODE) {
       const uiOnlyDaemonPortStr = process.env["ENVHEAVEN_UI_ONLY_DAEMON_PORT"];
 
       if (uiOnlyDaemonPortStr) {
-        // UI-only mode: reuse already-running daemon, only start UI
+        // Reuse existing daemon — only start UI
         const existingDaemonPort = parseInt(uiOnlyDaemonPortStr, 10);
-        const daemonLoopbackUrl = `http://127.0.0.1:${String(existingDaemonPort)}`;
-        const launched = await launchOffilineWebUi(repoRoot, daemonLoopbackUrl, stateStore);
+        const launched = await launchOffilineWebUi(repoRoot, `http://127.0.0.1:${String(existingDaemonPort)}`, stateStore);
         const uiAddress = launched.server.address();
         const uiPort = typeof uiAddress === "object" && uiAddress ? uiAddress.port : null;
 
-        // Write updated lock with uiPort (daemon port preserved)
-        await writeLockFile({ daemonPort: existingDaemonPort, uiPort: uiPort ?? null, startedAt: new Date().toISOString() });
+        // Update lock file to record uiPort (daemon port preserved)
+        await writeLockFile(paths, { daemonPort: existingDaemonPort, uiPort: uiPort ?? null, startedAt: new Date().toISOString() });
 
-        const cleanup = () => {
-          void clearLockFile().then(() => launched.server.close(() => process.exit(0)));
-        };
-        process.once("SIGTERM", cleanup);
-        process.once("SIGINT", cleanup);
+        process.once("SIGTERM", () => {
+          // On UI-only shutdown: null out uiPort in lock but leave daemon entry intact
+          void writeLockFile(paths, { daemonPort: existingDaemonPort, uiPort: null, startedAt: new Date().toISOString() })
+            .then(() => launched.server.close(() => process.exit(0)));
+        });
+        process.once("SIGINT", () => {
+          void writeLockFile(paths, { daemonPort: existingDaemonPort, uiPort: null, startedAt: new Date().toISOString() })
+            .then(() => launched.server.close(() => process.exit(0)));
+        });
         return;
       }
 
@@ -298,16 +289,15 @@ async function main(): Promise<void> {
       const daemonServer = await startDaemon(repoRoot, 0, stateStore, PACKAGE_VERSION);
       const daemonAddress = daemonServer.address();
       const daemonPort = typeof daemonAddress === "object" && daemonAddress ? daemonAddress.port : 0;
-      const daemonLoopbackUrl = `http://127.0.0.1:${String(daemonPort)}`;
 
-      const launched = await launchOffilineWebUi(repoRoot, daemonLoopbackUrl, stateStore);
+      const launched = await launchOffilineWebUi(repoRoot, `http://127.0.0.1:${String(daemonPort)}`, stateStore);
       const uiAddress = launched.server.address();
       const uiPort = typeof uiAddress === "object" && uiAddress ? uiAddress.port : null;
 
-      await writeLockFile({ daemonPort, uiPort: uiPort ?? null, startedAt: new Date().toISOString() });
+      await writeLockFile(paths, { daemonPort, uiPort: uiPort ?? null, startedAt: new Date().toISOString() });
 
       const cleanup = () => {
-        void clearLockFile().then(() => {
+        void clearLockFile(paths).then(() => {
           daemonServer.close(() => undefined);
           launched.server.close(() => process.exit(0));
         });
@@ -317,13 +307,12 @@ async function main(): Promise<void> {
       return;
     }
 
-    // ── Foreground: check per-service if already running ─────────────────────
-    const existingLock = await readLockFile();
+    // Check per-service if already running
+    const existingLock = await readLockFile(paths);
     const daemonAliveUi = !!(existingLock && existingLock.daemonPort > 0 && (await isPortOpen(existingLock.daemonPort)));
     const uiAlive = !!(daemonAliveUi && existingLock!.uiPort && existingLock!.uiPort > 0 && (await isPortOpen(existingLock!.uiPort)));
 
     if (daemonAliveUi && uiAlive) {
-      // Both already running — report and exit
       const lanIp = getLanIp();
       writeOutput(
         {
@@ -331,9 +320,7 @@ async function main(): Promise<void> {
           already_running: true,
           daemonUrls: buildUrlList(existingLock!.daemonPort, lanIp),
           uiUrls: buildUrlList(existingLock!.uiPort!, lanIp),
-          diagnostics: [
-            createDiagnostic("info", "already-running", "EnvHeaven daemon and offline UI are already running."),
-          ],
+          diagnostics: [createDiagnostic("info", "already-running", "EnvHeaven daemon and offline UI are already running.")],
         },
         0,
         options,
@@ -341,10 +328,9 @@ async function main(): Promise<void> {
       return;
     }
 
-    // ── Spawn background process (UI-only or full) ────────────────────────────
     const spawnEnv: NodeJS.ProcessEnv = { ...process.env, ENVHEAVEN_BG_MODE: "1" };
     if (daemonAliveUi && !uiAlive) {
-      // Daemon already running — only launch missing UI
+      // Daemon running, only launch missing UI
       spawnEnv["ENVHEAVEN_UI_ONLY_DAEMON_PORT"] = String(existingLock!.daemonPort);
     }
 
@@ -355,15 +341,10 @@ async function main(): Promise<void> {
     });
     child.unref();
 
-    // Wait until lock file has both daemonPort and uiPort reachable
-    const lock = await waitForLockFile(18000, 300, true);
+    const lock = await waitForLockFile(paths, 18000, 300, true);
     if (!lock) {
       writeOutput(
-        {
-          diagnostics: [
-            createDiagnostic("error", "offiline-web-ui-start-timeout", "EnvHeaven offline UI did not become reachable within 18 seconds."),
-          ],
-        },
+        { diagnostics: [createDiagnostic("error", "offiline-web-ui-start-timeout", "EnvHeaven offline UI did not become reachable within 18 seconds.")] },
         1,
         options,
       );
@@ -389,7 +370,6 @@ async function main(): Promise<void> {
     return;
   }
 
-  // ─── RUN / DEPLOY (require a target) ─────────────────────────────────────
   if (!intent.target) {
     writeOutput(
       {
@@ -522,15 +502,13 @@ async function main(): Promise<void> {
   );
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
 async function promptYesNo(prompt: string): Promise<boolean> {
   return new Promise((resolve) => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     rl.question(prompt, (answer) => {
       rl.close();
       const trimmed = answer.trim().toLowerCase();
-      // (Y/n) semantics: empty input or "y"/"yes" = true; explicit "n"/"no" = false
+      // (Y/n) semantics: empty or non-"n" resolves to true
       resolve(trimmed !== "n" && trimmed !== "no");
     });
   });
