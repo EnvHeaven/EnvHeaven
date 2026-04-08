@@ -181,6 +181,23 @@ export async function startDaemon(
 
       const url = new URL(request.url, "http://localhost");
 
+      // OPTIONS preflight: allow only trusted (localhost) origins for mutations
+      if (request.method === "OPTIONS") {
+        if (isTrustedOrigin(request)) {
+          const origin = request.headers["origin"] ?? "";
+          response.setHeader("access-control-allow-origin", origin || "*");
+          response.setHeader("access-control-allow-methods", "GET, POST, PUT, OPTIONS");
+          response.setHeader("access-control-allow-headers", "content-type");
+          response.setHeader("access-control-max-age", "86400");
+          response.statusCode = 204;
+          response.end();
+        } else {
+          response.statusCode = 403;
+          response.end();
+        }
+        return;
+      }
+
       // ─── GET / ───────────────────────────────────────────────────────────
       if (request.method === "GET" && url.pathname === "/") {
         sendHtml(response, 200, buildLandingPage());
@@ -190,7 +207,7 @@ export async function startDaemon(
       // ─── GET /repo/discovery ─────────────────────────────────────────────
       if (request.method === "GET" && url.pathname === "/repo/discovery") {
         const repoModel = await ensureRepoModel();
-        sendJson(response, 200, repoModel.discovery);
+        sendJson(response, 200, repoModel.discovery, true);
         return;
       }
 
@@ -212,7 +229,7 @@ export async function startDaemon(
             };
           }),
         );
-        sendJson(response, 200, { targets: statuses });
+        sendJson(response, 200, { targets: statuses }, true);
         return;
       }
 
@@ -220,11 +237,11 @@ export async function startDaemon(
       if (request.method === "GET" && url.pathname.startsWith("/plans/")) {
         const target = url.pathname.replace("/plans/", "") as SupportedTarget;
         if (!SUPPORTED_TARGETS.includes(target)) {
-          sendJson(response, 404, { error: `Unsupported target "${target}".` });
+          sendJson(response, 404, { error: `Unsupported target "${target}".` }, true);
           return;
         }
         const repoModel = await ensureRepoModel();
-        sendJson(response, 200, resolvePlan(repoModel, target));
+        sendJson(response, 200, resolvePlan(repoModel, target), true);
         return;
       }
 
@@ -264,7 +281,7 @@ export async function startDaemon(
           plugins: Object.values(repoModel.artifacts)
             .map((artifact) => artifact.PackageName ?? artifact.packageName)
             .filter(Boolean),
-        });
+        }, true);
         return;
       }
 
@@ -284,12 +301,16 @@ export async function startDaemon(
           selectedRepoId: selectedRepo?.repoId ?? null,
           selectedRepoRoot,
           repos: reposWithMeta,
-        });
+        }, true);
         return;
       }
 
       // ─── POST /api/repos/select ──────────────────────────────────────────
       if (url.pathname === "/api/repos/select" && request.method === "POST") {
+        if (!isTrustedOrigin(request)) {
+          sendJson(response, 403, { error: "Cross-origin mutation requests are not allowed." });
+          return;
+        }
         const payload = await readJsonBody(request);
         const requestedRepoRoot = typeof payload.repoRoot === "string" ? path.resolve(payload.repoRoot) : "";
         if (!requestedRepoRoot) {
@@ -314,6 +335,10 @@ export async function startDaemon(
 
       // ─── PUT /api/repos/meta ─────────────────────────────────────────────
       if (url.pathname === "/api/repos/meta" && request.method === "PUT") {
+        if (!isTrustedOrigin(request)) {
+          sendJson(response, 403, { error: "Cross-origin mutation requests are not allowed." });
+          return;
+        }
         const payload = await readJsonBody(request);
         const meta = {
           icon: typeof payload.icon === "string" ? payload.icon : undefined,
@@ -331,12 +356,16 @@ export async function startDaemon(
       if (url.pathname === "/api/versions" && request.method === "GET") {
         const repoModel = await ensureRepoModel();
         const versions = await buildVersionPayload(repoModel, selectedRepoRoot, stateStore);
-        sendJson(response, 200, { repoRoot: selectedRepoRoot, versions });
+        sendJson(response, 200, { repoRoot: selectedRepoRoot, versions }, true);
         return;
       }
 
       // ─── POST /api/versions/set ──────────────────────────────────────────
       if (url.pathname === "/api/versions/set" && request.method === "POST") {
+        if (!isTrustedOrigin(request)) {
+          sendJson(response, 403, { error: "Cross-origin mutation requests are not allowed." });
+          return;
+        }
         const payload = await readJsonBody(request);
         const artifactName = typeof payload.artifactName === "string" ? payload.artifactName : "";
         const packageName = typeof payload.packageName === "string" ? payload.packageName : undefined;
@@ -361,6 +390,10 @@ export async function startDaemon(
 
       // ─── POST /api/versions/increment ────────────────────────────────────
       if (url.pathname === "/api/versions/increment" && request.method === "POST") {
+        if (!isTrustedOrigin(request)) {
+          sendJson(response, 403, { error: "Cross-origin mutation requests are not allowed." });
+          return;
+        }
         const payload = await readJsonBody(request);
         const artifactName = typeof payload.artifactName === "string" ? payload.artifactName : "";
         const packageName = typeof payload.packageName === "string" ? payload.packageName : undefined;
@@ -380,12 +413,16 @@ export async function startDaemon(
       // ─── GET /api/actions ────────────────────────────────────────────────
       if (url.pathname === "/api/actions" && request.method === "GET") {
         const actions = await loadActions(selectedRepoRoot);
-        sendJson(response, 200, { repoRoot: selectedRepoRoot, actions });
+        sendJson(response, 200, { repoRoot: selectedRepoRoot, actions }, true);
         return;
       }
 
       // ─── POST /api/actions/dispatch ──────────────────────────────────────
       if (url.pathname === "/api/actions/dispatch" && request.method === "POST") {
+        if (!isTrustedOrigin(request)) {
+          sendJson(response, 403, { error: "Cross-origin mutation requests are not allowed." });
+          return;
+        }
         const payload = await readJsonBody(request);
         const actionId = typeof payload.actionId === "string" ? payload.actionId : "";
         const repoRoot = typeof payload.repoRoot === "string" ? path.resolve(payload.repoRoot) : selectedRepoRoot;
@@ -417,12 +454,15 @@ export async function startDaemon(
           return;
         }
 
+        const sseOrigin = request.headers["origin"];
+        const allowedSseOrigin = sseOrigin && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(sseOrigin) ? sseOrigin : "*";
+
         // Set SSE headers
         response.writeHead(200, {
           "content-type": "text/event-stream",
           "cache-control": "no-cache",
           "connection": "keep-alive",
-          "access-control-allow-origin": "*",
+          "access-control-allow-origin": allowedSseOrigin,
           "x-accel-buffering": "no",
         });
 
@@ -449,6 +489,10 @@ export async function startDaemon(
 
       // ─── PUT /api/actions/config ─────────────────────────────────────────
       if (url.pathname === "/api/actions/config" && request.method === "PUT") {
+        if (!isTrustedOrigin(request)) {
+          sendJson(response, 403, { error: "Cross-origin mutation requests are not allowed." });
+          return;
+        }
         const payload = await readJsonBody(request);
 
         if (typeof payload.id !== "string" || typeof payload.runCommand !== "string") {
@@ -456,8 +500,14 @@ export async function startDaemon(
           return;
         }
 
+        const safeId = sanitizeActionId(payload.id);
+        if (!safeId) {
+          sendJson(response, 400, { error: "action.id must be 1-64 characters: letters, digits, hyphens, and underscores only." });
+          return;
+        }
+
         const action: ActionDefinition = {
-          id: payload.id,
+          id: safeId,
           label: typeof payload.label === "string" ? payload.label : payload.id,
           runCommand: payload.runCommand,
           stopCommand: typeof payload.stopCommand === "string" ? payload.stopCommand : null,
@@ -485,12 +535,16 @@ export async function startDaemon(
           startedAt: run.startedAt,
           lineCount: run.lines.length,
         }));
-        sendJson(response, 200, { runs });
+        sendJson(response, 200, { runs }, true);
         return;
       }
 
       // ─── POST /api/actions/stop/:runId ───────────────────────────────────
       if (request.method === "POST" && url.pathname.startsWith("/api/actions/stop/")) {
+        if (!isTrustedOrigin(request)) {
+          sendJson(response, 403, { error: "Cross-origin mutation requests are not allowed." });
+          return;
+        }
         const runId = url.pathname.replace("/api/actions/stop/", "").replace(/^\/+|\/+$/g, "");
         const run = actionRuns.get(runId);
         if (!run) {
@@ -616,11 +670,29 @@ async function readJsonBody(request: http.IncomingMessage): Promise<ParsedReques
   return JSON.parse(rawBody) as ParsedRequestBody;
 }
 
-function sendJson(response: http.ServerResponse, statusCode: number, payload: unknown): void {
+/** Send a JSON response. Set cors=true only for read-only (GET) endpoints. */
+function sendJson(response: http.ServerResponse, statusCode: number, payload: unknown, cors = false): void {
   response.statusCode = statusCode;
-  response.setHeader("access-control-allow-origin", "*");
+  if (cors) response.setHeader("access-control-allow-origin", "*");
   response.setHeader("content-type", "application/json; charset=utf-8");
   response.end(JSON.stringify(payload, null, 2));
+}
+
+/**
+ * Returns true if the request originates from a trusted local context.
+ * Requests with no Origin header (CLI, curl, same-origin) are trusted.
+ * Browser cross-origin requests from any non-localhost domain are rejected.
+ */
+function isTrustedOrigin(request: http.IncomingMessage): boolean {
+  const origin = request.headers["origin"];
+  if (!origin) return true;
+  return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+}
+
+/** Validate action id — only allow safe filename characters, prevent path traversal. */
+function sanitizeActionId(id: string): string | null {
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(id)) return null;
+  return id;
 }
 
 function sendHtml(response: http.ServerResponse, statusCode: number, html: string): void {
