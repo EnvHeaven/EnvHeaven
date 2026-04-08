@@ -10,7 +10,6 @@ import {
   buildMissingProductionVersionDiagnostic,
   createArtifactDeployTag,
   readPackageMetadata,
-  withPermanentPackageVersion,
   withTemporaryPackageVersion,
 } from "./deploy/runtime";
 import { applyPnpmRecursiveFilter, isLocalGlobalInstall } from "./deploy/plan-filter";
@@ -102,15 +101,15 @@ async function main(): Promise<void> {
     const server = await startDaemon(repoRoot, 0, stateStore);
     const address = server.address();
     const port = typeof address === "object" && address ? address.port : null;
-    const daemonUrls = port === null ? [] : buildUrlList(port);
+    const lanIp = getLanIp();
+    const daemonUrls = buildUrlList(port, lanIp);
     writeOutput(
       {
         mode: "daemon",
         port,
-        daemonUrl: daemonUrls[0] ?? null,
         daemonUrls,
         diagnostics: [
-          createDiagnostic("info", "daemon-started", `EnvHeaven daemon started on port ${String(port)}.`),
+          createDiagnostic("info", "daemon-started", `EnvHeaven daemon listening on port ${String(port)}.`),
           createDiagnostic("info", "offiline-web-ui-hint", "Hint: `envheaven offiline-web-ui` is an option."),
           createDiagnostic("info", "offiline-web-ui-tip", "Tip: run `envheaven offiline-web-ui` to install and launch the offline UI."),
         ],
@@ -121,28 +120,35 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (intent.kind === "version") {
+    process.stdout.write(`EnvHeaven v${PACKAGE_VERSION}\n`);
+    process.exitCode = 0;
+    return;
+  }
+
   if (intent.kind === "offiline-web-ui") {
     const daemonServer = await startDaemon(repoRoot, 0, stateStore);
     const daemonAddress = daemonServer.address();
     const daemonPort = typeof daemonAddress === "object" && daemonAddress ? daemonAddress.port : null;
-    const daemonUrls = daemonPort === null ? [] : buildUrlList(daemonPort);
-    const daemonUrl = daemonUrls[0] ?? `http://localhost:${String(daemonPort)}`;
-    const launched = await launchOffilineWebUi(repoRoot, daemonUrl, stateStore);
-    const uiPort = safeParsePortFromUrl(launched.uiUrl);
-    const uiUrls = uiPort === null ? [launched.uiUrl] : buildUrlList(uiPort);
+    const daemonLoopbackUrl = `http://127.0.0.1:${String(daemonPort)}`;
+    const launched = await launchOffilineWebUi(repoRoot, daemonLoopbackUrl, stateStore);
     installServerSignalHandlers([daemonServer, launched.server]);
+
+    const uiAddress = launched.server.address();
+    const uiPort = typeof uiAddress === "object" && uiAddress ? uiAddress.port : null;
+    const lanIp = getLanIp();
+    const daemonUrls = buildUrlList(daemonPort, lanIp);
+    const uiUrls = buildUrlList(uiPort, lanIp);
 
     writeOutput(
       {
         mode: "offiline-web-ui",
-        daemonUrl,
-        daemonUrls,
-        uiUrl: launched.uiUrl,
-        uiUrls,
         source: launched.source,
+        daemonUrls,
+        uiUrls,
         diagnostics: [
-          createDiagnostic("info", "daemon-started", `EnvHeaven daemon started on ${daemonUrl}.`),
-          createDiagnostic("info", "offiline-web-ui-started", `EnvHeaven offiline web UI started at ${launched.uiUrl}.`),
+          createDiagnostic("info", "daemon-started", `EnvHeaven daemon listening on port ${String(daemonPort)}.`),
+          createDiagnostic("info", "offiline-web-ui-started", `EnvHeaven offiline web UI listening on port ${String(uiPort)}.`),
         ],
       },
       0,
@@ -346,39 +352,29 @@ function installServerSignalHandlers(servers: Array<{ close(callback: (error?: E
   process.once("SIGTERM", closeAll);
 }
 
-function buildUrlList(port: number): string[] {
+function getLanIp(): string | null {
+  const interfaces = os.networkInterfaces();
+  for (const ifaces of Object.values(interfaces)) {
+    if (!ifaces) continue;
+    for (const iface of ifaces) {
+      if (iface.family === "IPv4" && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return null;
+}
+
+function buildUrlList(port: number | null, lanIp: string | null): string[] {
+  if (port === null) return [];
   const urls = [
     `http://localhost:${String(port)}`,
     `http://127.0.0.1:${String(port)}`,
   ];
-  const lanIp = getLanIp();
   if (lanIp) {
     urls.push(`http://${lanIp}:${String(port)}`);
   }
-
-  return [...new Set(urls)];
-}
-
-function getLanIp(): string | null {
-  for (const addresses of Object.values(os.networkInterfaces())) {
-    for (const address of addresses ?? []) {
-      if (address.family === "IPv4" && !address.internal && !address.address.startsWith("169.254.")) {
-        return address.address;
-      }
-    }
-  }
-
-  return null;
-}
-
-function safeParsePortFromUrl(urlValue: string): number | null {
-  try {
-    const parsed = new URL(urlValue);
-    const port = Number.parseInt(parsed.port, 10);
-    return Number.isFinite(port) ? port : null;
-  } catch {
-    return null;
-  }
+  return urls;
 }
 
 void main().catch((error) => {
@@ -596,7 +592,7 @@ async function executeArtifactDeploy(
     },
   };
 
-  const applyVersion = isLocalGlobalInstall_ ? withPermanentPackageVersion : withTemporaryPackageVersion;
+  const applyVersion = withTemporaryPackageVersion;
   const result = await applyVersion(packageDirectory, resolvedVersion.value, async () => {
     return await executePlanItem(artifactExecution.runnerName, executionToRun, runtimeContext, diagnostics);
   });

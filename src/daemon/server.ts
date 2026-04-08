@@ -1,7 +1,6 @@
 import http from "node:http";
-import os from "node:os";
 import path from "node:path";
-import { WebSocket, WebSocketServer } from "ws";
+import { WebSocketServer, WebSocket } from "ws";
 import { buildRepoModel } from "../envrepo/model";
 import { discoverEnvRepo } from "../envrepo/discovery";
 import { resolvePlan } from "../envrepo/resolver";
@@ -22,17 +21,10 @@ interface ParsedRequestBody {
   [key: string]: unknown;
 }
 
-type DaemonEvent =
-  | {
-      type: "repo:selected";
-      selectedRepo: RepoStateRecord | null;
-      repoRoot: string;
-    }
-  | {
-      type: "version:set" | "version:incremented";
-      repoRoot: string;
-      record: ArtifactVersionRecord;
-    };
+export interface DaemonWsEvent {
+  type: string;
+  payload: unknown;
+}
 
 export async function startDaemon(
   rootDirectory: string,
@@ -43,7 +35,6 @@ export async function startDaemon(
   await stateStore.rememberRepo(normalizedRootDirectory);
   let selectedRepoRoot = normalizedRootDirectory;
   const repoModelCache = new Map<string, RepoModel>();
-  const webSocketClients = new Set<WebSocket>();
 
   const ensureRepoModel = async (repoRoot = selectedRepoRoot): Promise<RepoModel> => {
     const normalizedRepoRoot = path.resolve(repoRoot);
@@ -58,22 +49,16 @@ export async function startDaemon(
     return repoModel;
   };
 
-  const webSocketServer = new WebSocketServer({ noServer: true });
-  webSocketServer.on("connection", (socket: WebSocket) => {
-    webSocketClients.add(socket);
-    socket.on("close", () => {
-      webSocketClients.delete(socket);
-    });
-  });
+  const wsClients = new Set<WebSocket>();
 
-  const broadcastEvent = (event: DaemonEvent): void => {
-    const payload = JSON.stringify(event);
-    for (const client of webSocketClients) {
+  function broadcastEvent(event: DaemonWsEvent): void {
+    const json = JSON.stringify(event);
+    for (const client of wsClients) {
       if (client.readyState === WebSocket.OPEN) {
-        client.send(payload);
+        client.send(json);
       }
     }
-  };
+  }
 
   const server = http.createServer(async (request, response) => {
     try {
@@ -82,7 +67,7 @@ export async function startDaemon(
         return;
       }
 
-      const url = new URL(request.url, "http://127.0.0.1");
+      const url = new URL(request.url, "http://localhost");
 
       if (request.method === "GET" && url.pathname === "/") {
         sendHtml(response, 200, buildLandingPage());
@@ -139,18 +124,12 @@ export async function startDaemon(
         const address = server.address();
         const daemonPort = typeof address === "object" && address ? address.port : null;
         const selectedRepo = await stateStore.getSelectedRepo(selectedRepoRoot);
-        const daemonUrls = daemonPort === null ? [] : buildUrlList(daemonPort, "http");
-        const wsUrls = daemonPort === null ? [] : buildUrlList(daemonPort, "ws", "/ws");
         sendJson(response, 200, {
           ok: true,
           daemon: {
             port: daemonPort,
             repoRoot: selectedRepoRoot,
           },
-          daemonUrls,
-          daemonUrl: daemonUrls[0] ?? null,
-          wsUrls,
-          wsUrl: wsUrls[0] ?? null,
           selectedRepo,
           repoDiagnostics: repoModel.diagnostics,
           commands: [
@@ -167,7 +146,9 @@ export async function startDaemon(
             "artifact version registry",
             "dynamic-artifact-version resolution",
             "offline UI support",
+            "websocket real-time events",
           ],
+          websocket: "/ws",
           plugins: Object.values(repoModel.artifacts).map((artifact) => artifact.PackageName ?? artifact.packageName).filter(Boolean),
         });
         return;
@@ -202,15 +183,12 @@ export async function startDaemon(
         selectedRepoRoot = requestedRepoRoot;
         repoModelCache.set(requestedRepoRoot, repoModel);
         const selectedRepo = await stateStore.setSelectedRepo(requestedRepoRoot);
-        broadcastEvent({
-          type: "repo:selected",
-          selectedRepo,
-          repoRoot: selectedRepoRoot,
-        });
         sendJson(response, 200, {
           ok: true,
           selectedRepo,
         });
+
+        broadcastEvent({ type: "repo:selected", payload: { selectedRepo, selectedRepoRoot } });
         return;
       }
 
@@ -245,12 +223,9 @@ export async function startDaemon(
           lastVersion,
           nextVersion,
         });
-        broadcastEvent({
-          type: "version:set",
-          repoRoot: selectedRepoRoot,
-          record: updated,
-        });
         sendJson(response, 200, { ok: true, record: updated });
+
+        broadcastEvent({ type: "version:set", payload: { artifactName, record: updated } });
         return;
       }
 
@@ -265,12 +240,9 @@ export async function startDaemon(
         }
 
         const record = await stateStore.incrementArtifactNextVersion(selectedRepoRoot, artifactName, packageName, baseVersion);
-        broadcastEvent({
-          type: "version:incremented",
-          repoRoot: selectedRepoRoot,
-          record,
-        });
         sendJson(response, 200, { ok: true, record });
+
+        broadcastEvent({ type: "version:incremented", payload: { artifactName, record } });
         return;
       }
 
@@ -282,28 +254,32 @@ export async function startDaemon(
     }
   });
 
-  server.on("upgrade", (request, socket, head) => {
-    try {
-      const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-      if (requestUrl.pathname !== "/ws") {
-        socket.destroy();
-        return;
-      }
+  const wss = new WebSocketServer({ noServer: true });
 
-      webSocketServer.handleUpgrade(request, socket, head, (client: WebSocket) => {
-        webSocketServer.emit("connection", client, request);
+  wss.on("connection", (ws) => {
+    wsClients.add(ws);
+    ws.on("close", () => {
+      wsClients.delete(ws);
+    });
+    ws.on("error", () => {
+      wsClients.delete(ws);
+    });
+    ws.send(JSON.stringify({ type: "connected", payload: { clients: wsClients.size } }));
+  });
+
+  server.on("upgrade", (request, socket, head) => {
+    const urlPath = request.url ?? "/";
+    if (urlPath === "/ws" || urlPath.startsWith("/ws?")) {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit("connection", ws, request);
       });
-    } catch {
+    } else {
       socket.destroy();
     }
   });
 
   await new Promise<void>((resolve) => {
     server.listen(port, "0.0.0.0", () => resolve());
-  });
-
-  server.on("close", () => {
-    webSocketServer.close();
   });
 
   return server;
@@ -426,32 +402,8 @@ function buildLandingPage(): string {
       <li><a href="/plans/fake-local">/plans/fake-local</a></li>
       <li><a href="/plans/fake-local-01">/plans/fake-local-01</a></li>
     </ul>
+    <p>WebSocket: connect to <code>/ws</code> for real-time state events.</p>
     <p>Use <code>envheaven deploy local</code>, <code>envheaven deploy development</code>, <code>envheaven deploy beta</code>, or <code>envheaven deploy production</code> from the repo root for deploy workflows.</p>
   </body>
 </html>`;
-}
-
-function buildUrlList(port: number, protocol: "http" | "ws", pathname = ""): string[] {
-  const urls = [
-    `${protocol}://localhost:${String(port)}${pathname}`,
-    `${protocol}://127.0.0.1:${String(port)}${pathname}`,
-  ];
-  const lanIp = getLanIp();
-  if (lanIp) {
-    urls.push(`${protocol}://${lanIp}:${String(port)}${pathname}`);
-  }
-
-  return [...new Set(urls)];
-}
-
-function getLanIp(): string | null {
-  for (const addresses of Object.values(os.networkInterfaces())) {
-    for (const address of addresses ?? []) {
-      if (address.family === "IPv4" && !address.internal && !address.address.startsWith("169.254.")) {
-        return address.address;
-      }
-    }
-  }
-
-  return null;
 }

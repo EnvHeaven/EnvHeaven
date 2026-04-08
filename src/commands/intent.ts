@@ -8,6 +8,8 @@ const RUN_TARGET_KEYWORDS = new Set([
   "fake",
   "fake-local",
   "fake-local-01",
+  "install-revert",
+  "install-revert-01",
 ]);
 
 const DEPLOY_TARGET_KEYWORDS = new Set([
@@ -24,6 +26,7 @@ const DEPLOY_TARGET_KEYWORDS = new Set([
 const SPECIAL_COMMAND_KEYWORDS = new Set([
   "offiline-web-ui",
   "offline-web-ui",
+  "version",
 ]);
 
 const HARD_REJECT_KEYWORDS = new Set(["last"]);
@@ -59,7 +62,19 @@ export function inferCommandIntent(args: string[]): {
 
   const runCount = normalizedTokens.filter((token) => token === "run").length;
   const deployCount = normalizedTokens.filter((token) => token === "deploy").length;
-  const offilineCount = normalizedTokens.filter((token) => SPECIAL_COMMAND_KEYWORDS.has(token)).length;
+  const versionCount = normalizedTokens.filter((token) => token === "version").length;
+  const offilineCount = normalizedTokens.filter((token) => token !== "version" && SPECIAL_COMMAND_KEYWORDS.has(token)).length;
+
+  if (versionCount >= 1) {
+    return {
+      intent: {
+        kind: "version",
+        rawArgs: args,
+        normalizedTokens,
+      },
+      diagnostics: [],
+    };
+  }
 
   if (runCount > 1 || deployCount > 1 || offilineCount > 1) {
     return {
@@ -185,6 +200,8 @@ function parseSupportedRunTarget(tokens: string[]): { target: SupportedTarget; a
       case "local-01":
       case "fake-local":
       case "fake-local-01":
+      case "install-revert":
+      case "install-revert-01":
         return {
           target: targetTokens[0],
           artifactSelectors,

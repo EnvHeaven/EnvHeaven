@@ -32,24 +32,20 @@ function renderHumanOutput(payload: unknown): string {
     lines.push(`[info] port: ${String(p["port"])}`);
   }
 
-  if (typeof p["daemonUrl"] === "string") {
-    lines.push(`[info] daemon: ${p["daemonUrl"]}`);
-  }
-
   if (Array.isArray(p["daemonUrls"])) {
-    for (const url of p["daemonUrls"]) {
-      lines.push(`[info] daemon url: ${String(url)}`);
+    for (const u of p["daemonUrls"] as string[]) {
+      lines.push(`[info] daemon:  ${u}`);
     }
-  }
-
-  if (typeof p["uiUrl"] === "string") {
-    lines.push(`[info] ui: ${p["uiUrl"]}`);
+  } else if (typeof p["daemonUrl"] === "string") {
+    lines.push(`[info] daemon:  ${p["daemonUrl"]}`);
   }
 
   if (Array.isArray(p["uiUrls"])) {
-    for (const url of p["uiUrls"]) {
-      lines.push(`[info] ui url: ${String(url)}`);
+    for (const u of p["uiUrls"] as string[]) {
+      lines.push(`[info] ui:     ${u}`);
     }
+  } else if (typeof p["uiUrl"] === "string") {
+    lines.push(`[info] ui:     ${p["uiUrl"]}`);
   }
 
   if (p["intent"] && typeof p["intent"] === "object") {

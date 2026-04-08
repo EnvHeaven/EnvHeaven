@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -7,7 +7,18 @@ import { EnvHeavenStateStore } from "../state/store";
 import { buildWindowsCommandLine } from "../execution/spawn";
 
 const OFFILINE_UI_PACKAGE = "@envheaven/plugins-offiline-web-ui";
-const LOCAL_ARTIFACT_PATH = path.join("artifacts", "envheaven-pkg-plugin-offiline-web-ui-01");
+
+/**
+ * Candidate relative paths (from repoRoot) where the offline-web-ui package may live.
+ * Order matters — first match with a built dist wins.
+ *
+ * Path 1: running from inside envheaven-eh-env-eh-pkg-01/ (the package monorepo itself).
+ * Path 2: running from the parent workspace root (e.g. replit-test-01/).
+ */
+const LOCAL_ARTIFACT_PATHS: readonly string[] = [
+  path.join("artifacts", "envheaven-pkg-plugin-offiline-web-ui-01"),
+  path.join("artifacts", "envheaven-eh-env-eh-pkg-01", "artifacts", "envheaven-pkg-plugin-offiline-web-ui-01"),
+];
 
 interface OffilineWebUiApi {
   startOffilineWebUiServer(options: {
@@ -64,24 +75,42 @@ async function resolveOffilineWebUiSource(
   moduleReference: string;
   source: "local-workspace" | "user-cache";
 }> {
-  const localPackagePath = path.join(repoRoot, LOCAL_ARTIFACT_PATH);
-  const localPackageJsonPath = path.join(localPackagePath, "package.json");
-  const localDistEntryPath = path.join(localPackagePath, "dist", "server", "index.js");
+  // 1. Local workspace path — checked at multiple candidate locations so this works whether
+  //    the user runs from inside envheaven-eh-env-eh-pkg-01/ or from its parent workspace root.
+  for (const candidateRelPath of LOCAL_ARTIFACT_PATHS) {
+    const localPackagePath = path.join(repoRoot, candidateRelPath);
+    const localPackageJsonPath = path.join(localPackagePath, "package.json");
+    const localDistEntryPath = path.join(localPackagePath, "dist", "server", "index.js");
 
-  if (await exists(localPackageJsonPath)) {
-    if (!await exists(localDistEntryPath)) {
-      await runCommand("pnpm", ["run", "build"], localPackagePath);
+    if (await exists(localPackageJsonPath)) {
+      if (!await exists(localDistEntryPath)) {
+        await runCommand("npm", ["run", "build"], localPackagePath);
+      }
+
+      if (await exists(localDistEntryPath)) {
+        return {
+          requireRoot: localPackagePath,
+          moduleReference: localDistEntryPath,
+          source: "local-workspace",
+        };
+      }
     }
+  }
 
-    if (await exists(localDistEntryPath)) {
+  // 2. pnpm global install — populated by "envheaven deploy local"; works from any directory
+  const pnpmGlobalPath = await resolvePnpmGlobalPackage(OFFILINE_UI_PACKAGE);
+  if (pnpmGlobalPath) {
+    const globalDistEntry = path.join(pnpmGlobalPath, "dist", "server", "index.js");
+    if (await exists(globalDistEntry)) {
       return {
-        requireRoot: localPackagePath,
-        moduleReference: localDistEntryPath,
+        requireRoot: pnpmGlobalPath,
+        moduleReference: globalDistEntry,
         source: "local-workspace",
       };
     }
   }
 
+  // 3. npm cache fallback — downloads from registry
   const installRoot = path.join(store.getPaths().toolsDirectory, "offiline-web-ui");
   const requireRoot = await ensureCachedPackage(installRoot, OFFILINE_UI_PACKAGE);
   return {
@@ -89,6 +118,25 @@ async function resolveOffilineWebUiSource(
     moduleReference: OFFILINE_UI_PACKAGE,
     source: "user-cache",
   };
+}
+
+async function resolvePnpmGlobalPackage(packageName: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const pnpmCmd = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+    execFile(pnpmCmd, ["root", "-g"], { timeout: 8000 }, (err, stdout) => {
+      if (err || !stdout) {
+        resolve(null);
+        return;
+      }
+      const globalRoot = stdout.trim();
+      if (!globalRoot) {
+        resolve(null);
+        return;
+      }
+      const packagePath = path.join(globalRoot, ...packageName.split("/"));
+      resolve(packagePath);
+    });
+  });
 }
 
 async function ensureCachedPackage(installRoot: string, packageName: string): Promise<string> {
@@ -105,7 +153,7 @@ async function ensureCachedPackage(installRoot: string, packageName: string): Pr
   }
 
   if (!await exists(installedPackageJsonPath)) {
-    await runCommand("pnpm", ["add", "--dir", installRoot, packageName], installRoot);
+    await runCommand("npm", ["install", "--no-package-lock", "--prefix", installRoot, packageName], installRoot);
   }
 
   return installRoot;
