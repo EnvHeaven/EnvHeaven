@@ -114,7 +114,10 @@ export class EnvHeavenStateStore {
     packageName: string | undefined,
     updates: Partial<Pick<ArtifactVersionRecord, "lastVersion" | "nextVersion">>,
   ): Promise<ArtifactVersionRecord> {
-    const state = await this.loadState();
+    // Force reload from disk on every write so that concurrent processes
+    // (e.g. daemon and CLI running simultaneously) do not overwrite each
+    // other's state with a stale in-memory cache.
+    const state = await this.loadState(true);
     const repoRecord = await this.requireRepo(state, repoRoot);
     const recordKey = buildArtifactKey(artifactName, packageName);
     const existing = repoRecord.artifacts[recordKey];
