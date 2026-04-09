@@ -125,7 +125,13 @@ async function main(): Promise<void> {
         }
       }
 
-      await writeLockFile(paths, { daemonPort, uiPort, startedAt: new Date().toISOString() });
+      await writeLockFile(paths, {
+        daemonPort,
+        uiPort,
+        startedAt: new Date().toISOString(),
+        daemonPid: process.pid,
+        uiPid: uiPort !== null ? process.pid : undefined,
+      });
 
       process.once("SIGTERM", () => {
         void clearLockFile(paths).then(() => server.close(() => process.exit(0)));
@@ -135,6 +141,66 @@ async function main(): Promise<void> {
       });
       return;
     }
+
+    // ── daemon subcommand handling (stop / restart / status) ──────────────
+    if (intent.subcommand === "status" || intent.subcommand === "stop" || intent.subcommand === "restart") {
+      const lock = await readLockFile(paths);
+      const alive = !!(lock && lock.daemonPort > 0 && (await isPortOpen(lock.daemonPort)));
+
+      if (intent.subcommand === "status") {
+        writeOutput(
+          {
+            mode: "daemon",
+            running: alive,
+            port: alive ? lock!.daemonPort : null,
+            uiPort: alive && lock!.uiPort ? lock!.uiPort : null,
+            diagnostics: [
+              createDiagnostic(
+                "info",
+                alive ? "daemon-running" : "daemon-stopped",
+                alive
+                  ? `Daemon running on port ${String(lock!.daemonPort)}.`
+                  : "Daemon is not running.",
+              ),
+            ],
+          },
+          0,
+          options,
+        );
+        return;
+      }
+
+      if (!alive) {
+        const msg = intent.subcommand === "restart" ? "Daemon is not running — starting fresh." : "Daemon is not running.";
+        if (intent.subcommand === "stop") {
+          writeOutput({ diagnostics: [createDiagnostic("info", "daemon-already-stopped", msg)] }, 0, options);
+          return;
+        }
+        // restart with no running daemon → fall through to start
+      } else {
+        // Stop the daemon via its PID
+        const stopped = await killProcess(lock!.daemonPid ?? null, lock!.daemonPort);
+        if (!stopped) {
+          writeOutput(
+            { diagnostics: [createDiagnostic("error", "daemon-stop-failed", "Daemon did not stop within 5 seconds.")] },
+            1,
+            options,
+          );
+          return;
+        }
+        await clearLockFile(paths);
+        if (intent.subcommand === "stop") {
+          writeOutput(
+            { diagnostics: [createDiagnostic("info", "daemon-stopped", "Daemon stopped.")] },
+            0,
+            options,
+          );
+          return;
+        }
+        // restart: fall through to start logic below (after this if-block)
+      }
+    }
+    // ──────────────────────────────────────────────────────────────────────
 
     let prefs = await loadPreferences();
     if (prefs === null) {
@@ -270,8 +336,15 @@ async function main(): Promise<void> {
         const uiAddress = launched.server.address();
         const uiPort = typeof uiAddress === "object" && uiAddress ? uiAddress.port : null;
 
-        // Update lock file to record uiPort (daemon port preserved)
-        await writeLockFile(paths, { daemonPort: existingDaemonPort, uiPort: uiPort ?? null, startedAt: new Date().toISOString() });
+        // Update lock file to record uiPort (daemon port and PID preserved)
+        const existingLockForPid = await readLockFile(paths);
+        await writeLockFile(paths, {
+          daemonPort: existingDaemonPort,
+          uiPort: uiPort ?? null,
+          startedAt: new Date().toISOString(),
+          daemonPid: existingLockForPid?.daemonPid,
+          uiPid: process.pid,
+        });
 
         process.once("SIGTERM", () => {
           // On UI-only shutdown: null out uiPort in lock but leave daemon entry intact
@@ -294,7 +367,13 @@ async function main(): Promise<void> {
       const uiAddress = launched.server.address();
       const uiPort = typeof uiAddress === "object" && uiAddress ? uiAddress.port : null;
 
-      await writeLockFile(paths, { daemonPort, uiPort: uiPort ?? null, startedAt: new Date().toISOString() });
+      await writeLockFile(paths, {
+        daemonPort,
+        uiPort: uiPort ?? null,
+        startedAt: new Date().toISOString(),
+        daemonPid: process.pid,
+        uiPid: process.pid,
+      });
 
       const cleanup = () => {
         void clearLockFile(paths).then(() => {
@@ -369,6 +448,127 @@ async function main(): Promise<void> {
     );
     return;
   }
+
+  // ── ui [stop|restart|status] ──────────────────────────────────────────
+  if (intent.kind === "ui") {
+    const lock = await readLockFile(paths);
+    const uiAlive = !!(lock && lock.uiPort && lock.uiPort > 0 && (await isPortOpen(lock.uiPort)));
+    const daemonAlive = !!(lock && lock.daemonPort > 0 && (await isPortOpen(lock.daemonPort)));
+
+    if (intent.subcommand === "status") {
+      writeOutput(
+        {
+          mode: "ui",
+          running: uiAlive,
+          uiPort: uiAlive ? lock!.uiPort : null,
+          daemonPort: daemonAlive ? lock!.daemonPort : null,
+          diagnostics: [
+            createDiagnostic(
+              "info",
+              uiAlive ? "ui-running" : "ui-stopped",
+              uiAlive
+                ? `Offline UI running on port ${String(lock!.uiPort)}.`
+                : "Offline UI is not running.",
+            ),
+          ],
+        },
+        0,
+        options,
+      );
+      return;
+    }
+
+    if (intent.subcommand === "stop" || intent.subcommand === "restart") {
+      if (!uiAlive) {
+        if (intent.subcommand === "stop") {
+          writeOutput({ diagnostics: [createDiagnostic("info", "ui-already-stopped", "Offline UI is not running.")] }, 0, options);
+          return;
+        }
+        // restart with UI not running → fall through to start
+      } else {
+        const stopped = await killProcess(lock!.uiPid ?? null, lock!.uiPort!);
+        if (!stopped) {
+          writeOutput(
+            { diagnostics: [createDiagnostic("error", "ui-stop-failed", "Offline UI did not stop within 5 seconds.")] },
+            1,
+            options,
+          );
+          return;
+        }
+        // Clear uiPort from lock file (preserve daemonPort)
+        await writeLockFile(paths, {
+          daemonPort: lock!.daemonPort,
+          uiPort: null,
+          startedAt: lock!.startedAt,
+          daemonPid: lock!.daemonPid,
+          uiPid: undefined,
+        });
+        if (intent.subcommand === "stop") {
+          writeOutput({ diagnostics: [createDiagnostic("info", "ui-stopped", "Offline UI stopped.")] }, 0, options);
+          return;
+        }
+        // restart: fall through to start below
+      }
+    }
+
+    // No subcommand (or restart after stop): start the UI.
+    // This is the same logic as the offiline-web-ui start path.
+    const existingLock2 = await readLockFile(paths);
+    const daemonAlive2 = !!(existingLock2 && existingLock2.daemonPort > 0 && (await isPortOpen(existingLock2.daemonPort)));
+    const uiAlive2 = !!(daemonAlive2 && existingLock2!.uiPort && existingLock2!.uiPort > 0 && (await isPortOpen(existingLock2!.uiPort)));
+
+    if (daemonAlive2 && uiAlive2 && !intent.subcommand) {
+      const lanIp = getLanIp();
+      writeOutput(
+        {
+          mode: "ui",
+          already_running: true,
+          daemonUrls: buildUrlList(existingLock2!.daemonPort, lanIp),
+          uiUrls: buildUrlList(existingLock2!.uiPort!, lanIp),
+          diagnostics: [createDiagnostic("info", "already-running", "EnvHeaven daemon and offline UI are already running.")],
+        },
+        0,
+        options,
+      );
+      return;
+    }
+
+    const spawnEnv2: NodeJS.ProcessEnv = { ...process.env, ENVHEAVEN_BG_MODE: "1" };
+    if (daemonAlive2 && !uiAlive2) {
+      spawnEnv2["ENVHEAVEN_UI_ONLY_DAEMON_PORT"] = String(existingLock2!.daemonPort);
+    }
+
+    const uiChild = spawn(process.execPath, [process.argv[1], "offiline-web-ui"], {
+      detached: true,
+      stdio: ["ignore", "ignore", "ignore"],
+      env: spawnEnv2,
+    });
+    uiChild.unref();
+
+    const uiLock = await waitForLockFile(paths, 18000, 300, true);
+    if (!uiLock) {
+      writeOutput(
+        { diagnostics: [createDiagnostic("error", "ui-start-timeout", "Offline UI did not become reachable within 18 seconds.")] },
+        1,
+        options,
+      );
+      return;
+    }
+
+    const lanIp = getLanIp();
+    writeOutput(
+      {
+        mode: "ui",
+        daemonUrls: buildUrlList(uiLock.daemonPort, lanIp),
+        uiUrls: uiLock.uiPort ? buildUrlList(uiLock.uiPort, lanIp) : [],
+        diagnostics: [createDiagnostic("info", "ui-started", `Offline UI started on port ${String(uiLock.uiPort ?? 0)}.`)],
+      },
+      0,
+      options,
+    );
+    return;
+  }
+  // ──────────────────────────────────────────────────────────────────────
 
   if (!intent.target) {
     writeOutput(
@@ -572,6 +772,30 @@ function parseJsonRequestArg(jsonString: string): { intent: CommandIntent | null
     },
     diagnostics: [],
   };
+}
+
+async function killProcess(pid: number | null, port: number, timeoutMs = 5000): Promise<boolean> {
+  if (pid !== null) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // ESRCH = process already dead — that's fine
+    }
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!(await isPortOpen(port))) return true;
+    await new Promise<void>((resolve) => setTimeout(resolve, 250));
+  }
+  if (pid !== null) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // already dead
+    }
+  }
+  await new Promise<void>((resolve) => setTimeout(resolve, 300));
+  return !(await isPortOpen(port));
 }
 
 function getLanIp(): string | null {

@@ -7,6 +7,8 @@ export interface RunLockFile {
   daemonPort: number;
   uiPort: number | null;
   startedAt: string;
+  daemonPid?: number;
+  uiPid?: number;
 }
 
 export function getLockFilePath(paths: EnvHeavenPaths): string {
@@ -22,6 +24,8 @@ export async function readLockFile(paths: EnvHeavenPaths): Promise<RunLockFile |
       daemonPort: parsed.daemonPort,
       uiPort: typeof parsed.uiPort === "number" ? parsed.uiPort : null,
       startedAt: typeof parsed.startedAt === "string" ? parsed.startedAt : new Date().toISOString(),
+      daemonPid: typeof parsed.daemonPid === "number" ? parsed.daemonPid : undefined,
+      uiPid: typeof parsed.uiPid === "number" ? parsed.uiPid : undefined,
     };
   } catch {
     return null;

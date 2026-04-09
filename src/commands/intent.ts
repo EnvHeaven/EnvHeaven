@@ -29,6 +29,9 @@ const SPECIAL_COMMAND_KEYWORDS = new Set([
   "version",
 ]);
 
+const NOUN_COMMANDS = new Set(["daemon", "ui"]);
+const NOUN_SUBCOMMANDS = new Set(["stop", "restart", "status"]);
+
 const HARD_REJECT_KEYWORDS = new Set(["last"]);
 
 export function inferCommandIntent(args: string[]): {
@@ -118,6 +121,60 @@ export function inferCommandIntent(args: string[]): {
           normalizedTokens,
         },
         diagnostics: [],
+      };
+    }
+
+    // Handle: daemon [stop|restart|status]
+    if (normalizedTokens.length >= 1 && normalizedTokens[0] === "daemon") {
+      if (normalizedTokens.length === 1) {
+        return {
+          intent: { kind: "daemon", rawArgs: args, normalizedTokens },
+          diagnostics: [],
+        };
+      }
+      if (normalizedTokens.length === 2 && NOUN_SUBCOMMANDS.has(normalizedTokens[1])) {
+        return {
+          intent: {
+            kind: "daemon",
+            subcommand: normalizedTokens[1] as "stop" | "restart" | "status",
+            rawArgs: args,
+            normalizedTokens,
+          },
+          diagnostics: [],
+        };
+      }
+      return {
+        intent: null,
+        diagnostics: [
+          createDiagnostic("error", "unsupported-command-shape", `Unsupported daemon subcommand: "${normalizedTokens.slice(1).join(" ")}". Valid: stop, restart, status.`),
+        ],
+      };
+    }
+
+    // Handle: ui [stop|restart|status]
+    if (normalizedTokens.length >= 1 && normalizedTokens[0] === "ui") {
+      if (normalizedTokens.length === 1) {
+        return {
+          intent: { kind: "ui", rawArgs: args, normalizedTokens },
+          diagnostics: [],
+        };
+      }
+      if (normalizedTokens.length === 2 && NOUN_SUBCOMMANDS.has(normalizedTokens[1])) {
+        return {
+          intent: {
+            kind: "ui",
+            subcommand: normalizedTokens[1] as "stop" | "restart" | "status",
+            rawArgs: args,
+            normalizedTokens,
+          },
+          diagnostics: [],
+        };
+      }
+      return {
+        intent: null,
+        diagnostics: [
+          createDiagnostic("error", "unsupported-command-shape", `Unsupported ui subcommand: "${normalizedTokens.slice(1).join(" ")}". Valid: stop, restart, status.`),
+        ],
       };
     }
 

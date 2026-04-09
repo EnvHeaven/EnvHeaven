@@ -16,7 +16,8 @@ export interface Diagnostic {
 }
 
 export interface CommandIntent {
-  kind: "daemon" | "run" | "deploy" | "offiline-web-ui" | "version";
+  kind: "daemon" | "run" | "deploy" | "offiline-web-ui" | "version" | "ui";
+  subcommand?: "stop" | "restart" | "status";
   target?: SupportedTarget;
   rawArgs: string[];
   normalizedTokens: string[];
