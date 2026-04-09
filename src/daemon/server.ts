@@ -62,7 +62,6 @@ export async function startDaemon(
   const resolvedDaemonVersion = daemonVersion ?? readOwnPackageVersion();
   const normalizedRootDirectory = path.resolve(rootDirectory);
   await stateStore.rememberRepo(normalizedRootDirectory);
-  let selectedRepoRoot = normalizedRootDirectory;
   const repoModelCache = new Map<string, RepoModel>();
 
   // In-memory action runs registry
@@ -77,7 +76,7 @@ export async function startDaemon(
     }
   }
 
-  const ensureRepoModel = async (repoRoot = selectedRepoRoot): Promise<RepoModel> => {
+  const ensureRepoModel = async (repoRoot = normalizedRootDirectory): Promise<RepoModel> => {
     const normalizedRepoRoot = path.resolve(repoRoot);
     const cached = repoModelCache.get(normalizedRepoRoot);
     if (cached) {
@@ -242,7 +241,7 @@ export async function startDaemon(
             if (!plan.pluginPackage) {
               return { target, pluginPackage: null, diagnostics: plan.diagnostics };
             }
-            const plugin = await loadPlugin(plan.pluginPackage, selectedRepoRoot);
+            const plugin = await loadPlugin(plan.pluginPackage, normalizedRootDirectory);
             return {
               target,
               pluginPackage: plan.pluginPackage,
@@ -272,15 +271,13 @@ export async function startDaemon(
         const repoModel = await ensureRepoModel();
         const address = server.address();
         const daemonPort = typeof address === "object" && address ? address.port : null;
-        const selectedRepo = await stateStore.getSelectedRepo(selectedRepoRoot);
         sendJson(response, 200, {
           ok: true,
           version: resolvedDaemonVersion,
           daemon: {
             port: daemonPort,
-            repoRoot: selectedRepoRoot,
+            repoRoot: normalizedRootDirectory,
           },
-          selectedRepo,
           repoDiagnostics: repoModel.diagnostics,
           commands: [
             "envheaven",
@@ -310,7 +307,6 @@ export async function startDaemon(
       // ─── GET /api/repos ──────────────────────────────────────────────────
       if (url.pathname === "/api/repos" && request.method === "GET") {
         const repos = await stateStore.listRepos();
-        const selectedRepo = await stateStore.getSelectedRepo(selectedRepoRoot);
 
         const reposWithMeta = await Promise.all(
           repos.map(async (repo) => {
@@ -320,38 +316,8 @@ export async function startDaemon(
         );
 
         sendJson(response, 200, {
-          selectedRepoId: selectedRepo?.repoId ?? null,
-          selectedRepoRoot,
           repos: reposWithMeta,
         }, true);
-        return;
-      }
-
-      // ─── POST /api/repos/select ──────────────────────────────────────────
-      if (url.pathname === "/api/repos/select" && request.method === "POST") {
-        if (!isTrustedOrigin(request)) {
-          sendJson(response, 403, { error: "Cross-origin mutation requests are not allowed." });
-          return;
-        }
-        const payload = await readJsonBody(request);
-        const requestedRepoRoot = typeof payload.repoRoot === "string" ? path.resolve(payload.repoRoot) : "";
-        if (!requestedRepoRoot) {
-          sendJson(response, 400, { error: "repoRoot is required." });
-          return;
-        }
-
-        const discovery = await discoverEnvRepo(requestedRepoRoot);
-        const repoModel = buildRepoModel(discovery);
-        if (repoModel.diagnostics.some((diagnostic) => diagnostic.code === "base-layer-missing")) {
-          sendJson(response, 400, { error: `No valid EnvHeaven repo was found at "${requestedRepoRoot}".`, diagnostics: repoModel.diagnostics });
-          return;
-        }
-
-        selectedRepoRoot = requestedRepoRoot;
-        repoModelCache.set(requestedRepoRoot, repoModel);
-        const selectedRepo = await stateStore.setSelectedRepo(requestedRepoRoot);
-        sendJson(response, 200, { ok: true, selectedRepo });
-        broadcastEvent({ type: "repo:selected", payload: { selectedRepo, selectedRepoRoot } });
         return;
       }
 
@@ -362,23 +328,34 @@ export async function startDaemon(
           return;
         }
         const payload = await readJsonBody(request);
+        const metaRepoRoot = typeof payload.repoRoot === "string" ? path.resolve(payload.repoRoot) : "";
+        if (!metaRepoRoot) {
+          sendJson(response, 400, { error: "repoRoot is required." });
+          return;
+        }
         const meta = {
           icon: typeof payload.icon === "string" ? payload.icon : undefined,
           internalName: typeof payload.internalName === "string" ? payload.internalName : undefined,
           labelName: typeof payload.labelName === "string" ? payload.labelName : undefined,
           instanceLabelName: typeof payload.instanceLabelName === "string" ? payload.instanceLabelName : undefined,
         };
-        await saveArtifactMeta(selectedRepoRoot, meta);
+        await saveArtifactMeta(metaRepoRoot, meta);
         sendJson(response, 200, { ok: true, meta });
-        broadcastEvent({ type: "repo:meta-updated", payload: { repoRoot: selectedRepoRoot, meta } });
+        broadcastEvent({ type: "repo:meta-updated", payload: { repoRoot: metaRepoRoot, meta } });
         return;
       }
 
       // ─── GET /api/versions ───────────────────────────────────────────────
       if (url.pathname === "/api/versions" && request.method === "GET") {
-        const repoModel = await ensureRepoModel();
-        const versions = await buildVersionPayload(repoModel, selectedRepoRoot, stateStore);
-        sendJson(response, 200, { repoRoot: selectedRepoRoot, versions }, true);
+        const versionsRepoRoot = url.searchParams.get("repoRoot");
+        if (!versionsRepoRoot) {
+          sendJson(response, 400, { error: "repoRoot query parameter is required." });
+          return;
+        }
+        const resolvedVersionsRoot = path.resolve(versionsRepoRoot);
+        const repoModel = await ensureRepoModel(resolvedVersionsRoot);
+        const versions = await buildVersionPayload(repoModel, resolvedVersionsRoot, stateStore);
+        sendJson(response, 200, { repoRoot: resolvedVersionsRoot, versions }, true);
         return;
       }
 
@@ -389,6 +366,11 @@ export async function startDaemon(
           return;
         }
         const payload = await readJsonBody(request);
+        const setVersionRepoRoot = typeof payload.repoRoot === "string" ? path.resolve(payload.repoRoot) : "";
+        if (!setVersionRepoRoot) {
+          sendJson(response, 400, { error: "repoRoot is required." });
+          return;
+        }
         const artifactName = typeof payload.artifactName === "string" ? payload.artifactName : "";
         const packageName = typeof payload.packageName === "string" ? payload.packageName : undefined;
         const nextVersion = typeof payload.nextVersion === "string" ? payload.nextVersion.trim() : undefined;
@@ -404,7 +386,7 @@ export async function startDaemon(
           return;
         }
 
-        const updated = await stateStore.setArtifactVersion(selectedRepoRoot, artifactName, packageName, { lastVersion, nextVersion });
+        const updated = await stateStore.setArtifactVersion(setVersionRepoRoot, artifactName, packageName, { lastVersion, nextVersion });
         sendJson(response, 200, { ok: true, record: updated });
         broadcastEvent({ type: "version:set", payload: { artifactName, record: updated } });
         return;
@@ -417,6 +399,11 @@ export async function startDaemon(
           return;
         }
         const payload = await readJsonBody(request);
+        const incrRepoRoot = typeof payload.repoRoot === "string" ? path.resolve(payload.repoRoot) : "";
+        if (!incrRepoRoot) {
+          sendJson(response, 400, { error: "repoRoot is required." });
+          return;
+        }
         const artifactName = typeof payload.artifactName === "string" ? payload.artifactName : "";
         const packageName = typeof payload.packageName === "string" ? payload.packageName : undefined;
         const baseVersion = typeof payload.baseVersion === "string" ? payload.baseVersion : undefined;
@@ -426,7 +413,7 @@ export async function startDaemon(
           return;
         }
 
-        const record = await stateStore.incrementArtifactNextVersion(selectedRepoRoot, artifactName, packageName, baseVersion);
+        const record = await stateStore.incrementArtifactNextVersion(incrRepoRoot, artifactName, packageName, baseVersion);
         sendJson(response, 200, { ok: true, record });
         broadcastEvent({ type: "version:incremented", payload: { artifactName, record } });
         return;
@@ -434,8 +421,14 @@ export async function startDaemon(
 
       // ─── GET /api/actions ────────────────────────────────────────────────
       if (url.pathname === "/api/actions" && request.method === "GET") {
-        const actions = await loadActions(selectedRepoRoot);
-        sendJson(response, 200, { repoRoot: selectedRepoRoot, actions }, true);
+        const actionsRepoRoot = url.searchParams.get("repoRoot");
+        if (!actionsRepoRoot) {
+          sendJson(response, 400, { error: "repoRoot query parameter is required." });
+          return;
+        }
+        const resolvedActionsRoot = path.resolve(actionsRepoRoot);
+        const actions = await loadActions(resolvedActionsRoot);
+        sendJson(response, 200, { repoRoot: resolvedActionsRoot, actions }, true);
         return;
       }
 
@@ -447,7 +440,12 @@ export async function startDaemon(
         }
         const payload = await readJsonBody(request);
         const actionId = typeof payload.actionId === "string" ? payload.actionId : "";
-        const repoRoot = typeof payload.repoRoot === "string" ? path.resolve(payload.repoRoot) : selectedRepoRoot;
+        const repoRoot = typeof payload.repoRoot === "string" ? path.resolve(payload.repoRoot) : "";
+
+        if (!repoRoot) {
+          sendJson(response, 400, { error: "repoRoot is required." });
+          return;
+        }
 
         if (!actionId) {
           sendJson(response, 400, { error: "actionId is required." });
@@ -516,6 +514,11 @@ export async function startDaemon(
           return;
         }
         const payload = await readJsonBody(request);
+        const configRepoRoot = typeof payload.repoRoot === "string" ? path.resolve(payload.repoRoot) : "";
+        if (!configRepoRoot) {
+          sendJson(response, 400, { error: "repoRoot is required." });
+          return;
+        }
 
         if (typeof payload.id !== "string" || typeof payload.runCommand !== "string") {
           sendJson(response, 400, { error: "action.id and action.runCommand are required." });
@@ -542,9 +545,9 @@ export async function startDaemon(
           pageHeaderOptions: normalizePageHeaderOptions(payload.pageHeaderOptions),
         };
 
-        await saveAction(selectedRepoRoot, action);
+        await saveAction(configRepoRoot, action);
         sendJson(response, 200, { ok: true, action });
-        broadcastEvent({ type: "actions:updated", payload: { repoRoot: selectedRepoRoot } });
+        broadcastEvent({ type: "actions:updated", payload: { repoRoot: configRepoRoot } });
         return;
       }
 
@@ -595,14 +598,20 @@ export async function startDaemon(
           sendJson(response, 400, { error: "action id is required in the path." });
           return;
         }
+        const deleteRepoRoot = url.searchParams.get("repoRoot");
+        if (!deleteRepoRoot) {
+          sendJson(response, 400, { error: "repoRoot query parameter is required." });
+          return;
+        }
+        const resolvedDeleteRoot = path.resolve(deleteRepoRoot);
         try {
-          await deleteAction(selectedRepoRoot, rawId);
+          await deleteAction(resolvedDeleteRoot, rawId);
         } catch {
           sendJson(response, 404, { error: `Action "${rawId}" not found.` });
           return;
         }
         sendJson(response, 200, { ok: true, actionId: rawId });
-        broadcastEvent({ type: "actions:updated", payload: { repoRoot: selectedRepoRoot } });
+        broadcastEvent({ type: "actions:updated", payload: { repoRoot: resolvedDeleteRoot } });
         return;
       }
 

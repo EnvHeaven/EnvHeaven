@@ -1048,11 +1048,7 @@ async function executeArtifactDeploy(
     env: { ...hydratedExecution.env, EH_ARTIFACT_VERSION: resolvedVersion.value },
   };
 
-  // Local global installs use symlinks back to the source directory, so the
-  // installed binary reads package.json directly from the source path. Using
-  // a temporary version would revert to 0.1.0 after install. Use permanent
-  // so the binary always reports the correct deployed version.
-  const applyVersion = isLocalGlobalInstall_ ? withPermanentPackageVersion : withTemporaryPackageVersion;
+  const applyVersion = withTemporaryPackageVersion;
   const result = await applyVersion(packageDirectory, resolvedVersion.value, async () => {
     return await executePlanItem(artifactExecution.runnerName, executionToRun, runtimeContext, diagnostics);
   });
