@@ -598,12 +598,18 @@ export async function startDaemon(
           sendJson(response, 400, { error: "action id is required in the path." });
           return;
         }
-        const deleteRepoRoot = url.searchParams.get("repoRoot");
-        if (!deleteRepoRoot) {
-          sendJson(response, 400, { error: "repoRoot query parameter is required." });
+        let deleteRepoRootRaw = url.searchParams.get("repoRoot") ?? "";
+        if (!deleteRepoRootRaw) {
+          try {
+            const deleteBody = await readJsonBody(request);
+            deleteRepoRootRaw = typeof deleteBody.repoRoot === "string" ? deleteBody.repoRoot : "";
+          } catch { /* no body — handled below */ }
+        }
+        if (!deleteRepoRootRaw) {
+          sendJson(response, 400, { error: "repoRoot is required (body or query string)." });
           return;
         }
-        const resolvedDeleteRoot = path.resolve(deleteRepoRoot);
+        const resolvedDeleteRoot = path.resolve(deleteRepoRootRaw);
         try {
           await deleteAction(resolvedDeleteRoot, rawId);
         } catch {
