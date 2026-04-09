@@ -208,7 +208,7 @@ export async function startDaemon(
         if (isTrustedOrigin(request)) {
           const origin = request.headers["origin"] ?? "";
           response.setHeader("access-control-allow-origin", origin || "*");
-          response.setHeader("access-control-allow-methods", "GET, POST, PUT, OPTIONS");
+          response.setHeader("access-control-allow-methods", "GET, POST, PUT, DELETE, OPTIONS");
           response.setHeader("access-control-allow-headers", "content-type");
           response.setHeader("access-control-max-age", "86400");
           response.statusCode = 204;
