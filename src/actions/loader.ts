@@ -7,6 +7,12 @@ export interface ActionHelper {
   value: string;
 }
 
+export interface PageHeaderOptions {
+  isFixedOnHeader: boolean;
+  hasToReplaceActionText?: boolean;
+  actionTextToReplace?: string;
+}
+
 export interface ActionDefinition {
   id: string;
   label: string;
@@ -18,6 +24,7 @@ export interface ActionDefinition {
   stopLabel: string;
   successHelpers: ActionHelper[];
   failHelpers: ActionHelper[];
+  pageHeaderOptions?: PageHeaderOptions;
 }
 
 const ENV_DIR = ".envheaven";
@@ -141,6 +148,18 @@ function normalizeAction(parsed: Record<string, unknown>): ActionDefinition | nu
     stopLabel: typeof parsed["stopLabel"] === "string" ? parsed["stopLabel"] : "Stop",
     successHelpers: normalizeHelpers(parsed["successHelpers"]),
     failHelpers: normalizeHelpers(parsed["failHelpers"]),
+    pageHeaderOptions: normalizePageHeaderOptions(parsed["pageHeaderOptions"]),
+  };
+}
+
+export function normalizePageHeaderOptions(raw: unknown): PageHeaderOptions | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const r = raw as Record<string, unknown>;
+  if (r["isFixedOnHeader"] !== true) return undefined;
+  return {
+    isFixedOnHeader: true,
+    hasToReplaceActionText: r["hasToReplaceActionText"] === true,
+    actionTextToReplace: typeof r["actionTextToReplace"] === "string" ? r["actionTextToReplace"] : "",
   };
 }
 

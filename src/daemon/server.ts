@@ -16,7 +16,7 @@ import {
   type ArtifactVersionRecord,
   type RepoStateRecord,
 } from "../state/store";
-import { loadActions, saveAction, loadArtifactMeta, saveArtifactMeta, type ActionDefinition } from "../actions/loader";
+import { loadActions, saveAction, loadArtifactMeta, saveArtifactMeta, normalizePageHeaderOptions, type ActionDefinition } from "../actions/loader";
 import type { RepoModel, SupportedTarget } from "../types";
 
 const SUPPORTED_TARGETS: SupportedTarget[] = ["default", "local", "local-01", "fake-local", "fake-local-01"];
@@ -530,6 +530,7 @@ export async function startDaemon(
           stopLabel: typeof payload.stopLabel === "string" ? payload.stopLabel : "Stop",
           successHelpers: normalizeHelperArray(payload.successHelpers),
           failHelpers: normalizeHelperArray(payload.failHelpers),
+          pageHeaderOptions: normalizePageHeaderOptions(payload.pageHeaderOptions),
         };
 
         await saveAction(selectedRepoRoot, action);
