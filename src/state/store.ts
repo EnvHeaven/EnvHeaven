@@ -58,7 +58,9 @@ export class EnvHeavenStateStore {
   }
 
   async rememberRepo(repoRoot: string): Promise<RepoStateRecord> {
-    const state = await this.loadState();
+    // Always force-reload from disk before writing so that concurrent processes
+    // (daemon + CLI) do not overwrite each other's state with a stale cache.
+    const state = await this.loadState(true);
     const repoId = buildRepoId(repoRoot);
     const existing = state.repos[repoId];
     const repoRecord: RepoStateRecord = existing ?? {
