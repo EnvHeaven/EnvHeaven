@@ -486,7 +486,7 @@ async function main(): Promise<void> {
         }
         // restart with UI not running → fall through to start
       } else {
-        const stopped = await killProcess(lock!.uiPid ?? null, lock!.uiPort!);
+        const stopped = await killProcess(lock!.uiPid ?? null, lock!.uiPort!, 6000, lock!.daemonPort);
         if (!stopped) {
           writeOutput(
             { diagnostics: [createDiagnostic("error", "ui-stop-failed", "Offline UI did not stop within 5 seconds.")] },
@@ -774,27 +774,59 @@ function parseJsonRequestArg(jsonString: string): { intent: CommandIntent | null
   };
 }
 
-async function killProcess(pid: number | null, port: number, timeoutMs = 5000): Promise<boolean> {
+async function killProcess(
+  pid: number | null,
+  port: number,
+  timeoutMs = 6000,
+  shutdownApiPort?: number,
+): Promise<boolean> {
+  // Phase 1 — SIGTERM by PID if available
   if (pid !== null) {
-    try {
-      process.kill(pid, "SIGTERM");
-    } catch {
-      // ESRCH = process already dead — that's fine
-    }
+    try { process.kill(pid, "SIGTERM"); } catch { /* already dead */ }
   }
+
+  // Phase 2 — HTTP shutdown endpoint (daemon API port, works for new daemons)
+  const apiPort = shutdownApiPort ?? port;
+  try {
+    await fetch(`http://127.0.0.1:${apiPort}/daemon/shutdown`, {
+      method: "POST",
+      signal: AbortSignal.timeout(1500),
+    });
+  } catch { /* endpoint may not exist on old daemons */ }
+
+  // Phase 3 — OS-level fallback: find PID via fuser and send SIGTERM
+  if (pid === null) {
+    try {
+      const { execFileSync } = await import("node:child_process");
+      const raw = execFileSync("fuser", [`${port}/tcp`], { stdio: ["ignore", "pipe", "ignore"] })
+        .toString()
+        .trim();
+      for (const token of raw.split(/\s+/).filter(Boolean)) {
+        const fuserPid = Number(token);
+        if (fuserPid > 0) {
+          try { process.kill(fuserPid, "SIGTERM"); } catch { /* already dead */ }
+        }
+      }
+    } catch { /* fuser not available or no matching process */ }
+  }
+
+  // Phase 4 — poll until port closes
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (!(await isPortOpen(port))) return true;
     await new Promise<void>((resolve) => setTimeout(resolve, 250));
   }
+
+  // Phase 5 — last resort SIGKILL
   if (pid !== null) {
+    try { process.kill(pid, "SIGKILL"); } catch { /* already dead */ }
+  } else {
     try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // already dead
-    }
+      const { execFileSync } = await import("node:child_process");
+      execFileSync("fuser", ["-k", `${port}/tcp`], { stdio: "ignore" });
+    } catch { /* fuser not available */ }
   }
-  await new Promise<void>((resolve) => setTimeout(resolve, 300));
+  await new Promise<void>((resolve) => setTimeout(resolve, 400));
   return !(await isPortOpen(port));
 }
 

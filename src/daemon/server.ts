@@ -574,6 +574,17 @@ export async function startDaemon(
         return;
       }
 
+      if (request.method === "POST" && url.pathname === "/daemon/shutdown") {
+        if (!isTrustedOrigin(request)) {
+          sendJson(response, 403, { error: "Cross-origin shutdown requests are not allowed." });
+          return;
+        }
+        sendJson(response, 200, { ok: true, message: "Daemon shutting down." });
+        // Give the response time to flush before exiting
+        setTimeout(() => process.exit(0), 150);
+        return;
+      }
+
       sendJson(response, 404, { error: "Unknown endpoint." });
     } catch (error) {
       sendJson(response, 500, {
