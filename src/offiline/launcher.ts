@@ -42,6 +42,7 @@ export async function launchOffilineWebUi(
   repoRoot: string,
   daemonUrl: string,
   store: EnvHeavenStateStore,
+  port?: number,
 ): Promise<{
   uiUrl: string;
   server: http.Server;
@@ -58,6 +59,7 @@ export async function launchOffilineWebUi(
 
   const started = await api.startOffilineWebUiServer({
     daemonUrl,
+    ...(port !== undefined ? { port } : {}),
   });
 
   return {

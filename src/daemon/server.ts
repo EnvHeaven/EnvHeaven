@@ -16,7 +16,7 @@ import {
   type ArtifactVersionRecord,
   type RepoStateRecord,
 } from "../state/store";
-import { loadActions, saveAction, loadArtifactMeta, saveArtifactMeta, normalizePageHeaderOptions, type ActionDefinition } from "../actions/loader";
+import { loadActions, saveAction, deleteAction, loadArtifactMeta, saveArtifactMeta, normalizePageHeaderOptions, type ActionDefinition } from "../actions/loader";
 import type { RepoModel, SupportedTarget } from "../types";
 
 const SUPPORTED_TARGETS: SupportedTarget[] = ["default", "local", "local-01", "fake-local", "fake-local-01"];
@@ -58,7 +58,7 @@ export async function startDaemon(
   port = 0,
   stateStore = new EnvHeavenStateStore(),
   daemonVersion?: string,
-): Promise<http.Server> {
+): Promise<{ server: http.Server; killAllRuns: () => void }> {
   const resolvedDaemonVersion = daemonVersion ?? readOwnPackageVersion();
   const normalizedRootDirectory = path.resolve(rootDirectory);
   await stateStore.rememberRepo(normalizedRootDirectory);
@@ -67,6 +67,15 @@ export async function startDaemon(
 
   // In-memory action runs registry
   const actionRuns = new Map<string, ActionRun>();
+
+  function killAllRuns(): void {
+    for (const run of actionRuns.values()) {
+      if (run.status === "running" && run.process) {
+        try { run.process.kill("SIGTERM"); } catch { /* ignore */ }
+        run.status = "stopped";
+      }
+    }
+  }
 
   const ensureRepoModel = async (repoRoot = selectedRepoRoot): Promise<RepoModel> => {
     const normalizedRepoRoot = path.resolve(repoRoot);
@@ -575,11 +584,34 @@ export async function startDaemon(
         return;
       }
 
+      // ─── DELETE /api/actions/config/:id ─────────────────────────────────
+      if (request.method === "DELETE" && url.pathname.startsWith("/api/actions/config/")) {
+        if (!isTrustedOrigin(request)) {
+          sendJson(response, 403, { error: "Cross-origin mutation requests are not allowed." });
+          return;
+        }
+        const rawId = url.pathname.replace("/api/actions/config/", "").replace(/^\/+|\/+$/g, "");
+        if (!rawId) {
+          sendJson(response, 400, { error: "action id is required in the path." });
+          return;
+        }
+        try {
+          await deleteAction(selectedRepoRoot, rawId);
+        } catch {
+          sendJson(response, 404, { error: `Action "${rawId}" not found.` });
+          return;
+        }
+        sendJson(response, 200, { ok: true, actionId: rawId });
+        broadcastEvent({ type: "actions:updated", payload: { repoRoot: selectedRepoRoot } });
+        return;
+      }
+
       if (request.method === "POST" && url.pathname === "/daemon/shutdown") {
         if (!isTrustedOrigin(request)) {
           sendJson(response, 403, { error: "Cross-origin shutdown requests are not allowed." });
           return;
         }
+        killAllRuns();
         sendJson(response, 200, { ok: true, message: "Daemon shutting down." });
         // Give the response time to flush before exiting
         setTimeout(() => process.exit(0), 150);
@@ -624,7 +656,7 @@ export async function startDaemon(
     server.listen(port, "127.0.0.1", () => resolve());
   });
 
-  return server;
+  return { server, killAllRuns };
 }
 
 async function buildVersionPayload(

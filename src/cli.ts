@@ -110,7 +110,7 @@ async function main(): Promise<void> {
 
   if (intent.kind === "daemon") {
     if (BG_MODE) {
-      const server = await startDaemon(repoRoot, 0, stateStore, PACKAGE_VERSION);
+      const { server, killAllRuns } = await startDaemon(repoRoot, 42990, stateStore, PACKAGE_VERSION);
       const address = server.address();
       const daemonPort = typeof address === "object" && address ? address.port : 0;
 
@@ -118,7 +118,7 @@ async function main(): Promise<void> {
       const bgPrefs = await loadPreferences();
       if (bgPrefs?.autoStartUi) {
         try {
-          const launched = await launchOffilineWebUi(repoRoot, `http://127.0.0.1:${String(daemonPort)}`, stateStore);
+          const launched = await launchOffilineWebUi(repoRoot, `http://127.0.0.1:${String(daemonPort)}`, stateStore, 42991);
           const uiAddr = launched.server.address();
           uiPort = typeof uiAddr === "object" && uiAddr ? uiAddr.port : null;
         } catch {
@@ -135,9 +135,11 @@ async function main(): Promise<void> {
       });
 
       process.once("SIGTERM", () => {
+        killAllRuns();
         void clearLockFile(paths).then(() => server.close(() => process.exit(0)));
       });
       process.once("SIGINT", () => {
+        killAllRuns();
         void clearLockFile(paths).then(() => server.close(() => process.exit(0)));
       });
       return;
@@ -333,7 +335,7 @@ async function main(): Promise<void> {
       if (uiOnlyDaemonPortStr) {
         // Reuse existing daemon — only start UI
         const existingDaemonPort = parseInt(uiOnlyDaemonPortStr, 10);
-        const launched = await launchOffilineWebUi(repoRoot, `http://127.0.0.1:${String(existingDaemonPort)}`, stateStore);
+        const launched = await launchOffilineWebUi(repoRoot, `http://127.0.0.1:${String(existingDaemonPort)}`, stateStore, 42991);
         const uiAddress = launched.server.address();
         const uiPort = typeof uiAddress === "object" && uiAddress ? uiAddress.port : null;
 
@@ -360,11 +362,11 @@ async function main(): Promise<void> {
       }
 
       // Full mode: start daemon + UI
-      const daemonServer = await startDaemon(repoRoot, 0, stateStore, PACKAGE_VERSION);
+      const { server: daemonServer, killAllRuns: killDaemonRuns } = await startDaemon(repoRoot, 42990, stateStore, PACKAGE_VERSION);
       const daemonAddress = daemonServer.address();
       const daemonPort = typeof daemonAddress === "object" && daemonAddress ? daemonAddress.port : 0;
 
-      const launched = await launchOffilineWebUi(repoRoot, `http://127.0.0.1:${String(daemonPort)}`, stateStore);
+      const launched = await launchOffilineWebUi(repoRoot, `http://127.0.0.1:${String(daemonPort)}`, stateStore, 42991);
       const uiAddress = launched.server.address();
       const uiPort = typeof uiAddress === "object" && uiAddress ? uiAddress.port : null;
 
@@ -377,6 +379,7 @@ async function main(): Promise<void> {
       });
 
       const cleanup = () => {
+        killDaemonRuns();
         void clearLockFile(paths).then(() => {
           daemonServer.close(() => undefined);
           launched.server.close(() => process.exit(0));

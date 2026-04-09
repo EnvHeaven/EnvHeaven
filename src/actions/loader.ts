@@ -39,44 +39,6 @@ export interface ArtifactMeta {
   instanceLabelName?: string;
 }
 
-const DEFAULT_ACTIONS: ActionDefinition[] = [
-  {
-    id: "run-local",
-    label: "Run Local",
-    runCommand: "envheaven run local",
-    stopCommand: null,
-    icon: "play",
-    description: "Start the artifact environment locally.",
-    runLabel: "Run Local",
-    stopLabel: "Stop",
-    successHelpers: [],
-    failHelpers: [],
-  },
-  {
-    id: "run-fake-local",
-    label: "Run Fake Local",
-    runCommand: "envheaven run fake-local",
-    stopCommand: null,
-    icon: "play",
-    description: "Run with fake/mock environment variables.",
-    runLabel: "Run Fake Local",
-    stopLabel: "Stop",
-    successHelpers: [],
-    failHelpers: [],
-  },
-  {
-    id: "run-development",
-    label: "Run Development",
-    runCommand: "envheaven run development",
-    stopCommand: null,
-    icon: "play",
-    description: "Start the artifact in development mode.",
-    runLabel: "Run Development",
-    stopLabel: "Stop",
-    successHelpers: [],
-    failHelpers: [],
-  },
-];
 
 export async function loadActions(repoRoot: string): Promise<ActionDefinition[]> {
   const actionsDir = path.join(repoRoot, ENV_DIR, ACTIONS_SUBDIR);
@@ -85,7 +47,7 @@ export async function loadActions(repoRoot: string): Promise<ActionDefinition[]>
     const actionFiles = files.filter((f) => f.endsWith(ACTION_SUFFIX));
 
     if (actionFiles.length === 0) {
-      return DEFAULT_ACTIONS;
+      return [];
     }
 
     const actions: ActionDefinition[] = [];
@@ -102,10 +64,16 @@ export async function loadActions(repoRoot: string): Promise<ActionDefinition[]>
       }
     }
 
-    return actions.length > 0 ? actions : DEFAULT_ACTIONS;
+    return actions;
   } catch {
-    return DEFAULT_ACTIONS;
+    return [];
   }
+}
+
+export async function deleteAction(repoRoot: string, actionId: string): Promise<void> {
+  const actionsDir = path.join(repoRoot, ENV_DIR, ACTIONS_SUBDIR);
+  const filePath = path.join(actionsDir, `${actionId}${ACTION_SUFFIX}`);
+  await fs.unlink(filePath);
 }
 
 export async function saveAction(repoRoot: string, action: ActionDefinition): Promise<void> {
