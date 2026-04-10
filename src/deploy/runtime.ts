@@ -172,12 +172,24 @@ async function copyTree(src: string, dest: string): Promise<void> {
 export async function stageAndPackLocal(
   packageDirectory: string,
   targetVersion: string,
+  persistentCacheDir?: string,
 ): Promise<StagedPackage> {
   if (!isValidVersionString(targetVersion)) {
     throw new Error(`Invalid package version "${targetVersion}".`);
   }
 
-  const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "envheaven-stage-"));
+  const meta = await readPackageMetadata(packageDirectory);
+  const safeName = meta.name.replace(/[^a-zA-Z0-9._-]/g, "-");
+
+  let stagingDir: string;
+  if (persistentCacheDir) {
+    stagingDir = path.join(persistentCacheDir, "staging", safeName);
+    await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    await fs.mkdir(stagingDir, { recursive: true });
+  } else {
+    stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "envheaven-stage-"));
+  }
+
   const staged = path.join(stagingDir, "package");
 
   await copyTree(packageDirectory, staged);
@@ -205,55 +217,11 @@ export async function stageAndPackLocal(
     tarballPath,
     stagingDir,
     cleanup: async () => {
-      await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+      if (!persistentCacheDir) {
+        await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+      }
     },
   };
-}
-
-export async function fixPnpmGlobalFileRefs(
-  packageName: string,
-  sourcePackageDir: string,
-): Promise<void> {
-  const pnpmGlobalDir = await locatePnpmGlobalDir();
-  if (!pnpmGlobalDir) return;
-
-  const globalPkgJsonPath = path.join(pnpmGlobalDir, "package.json");
-  let raw: string;
-  try {
-    raw = await fs.readFile(globalPkgJsonPath, "utf8");
-  } catch {
-    return;
-  }
-
-  const parsed = JSON.parse(raw) as Record<string, unknown>;
-  const deps = parsed.dependencies as Record<string, string> | undefined;
-  if (!deps) return;
-
-  let changed = false;
-  for (const [name, spec] of Object.entries(deps)) {
-    if (typeof spec !== "string") continue;
-    const isTarballRef = spec.startsWith("file:") && spec.endsWith(".tgz");
-    const isTmpRef = spec.startsWith("file:/tmp/") || spec.startsWith("/tmp/");
-    if (isTarballRef || isTmpRef) {
-      const linkTarget = name === packageName ? sourcePackageDir : spec;
-      deps[name] = `link:${linkTarget}`;
-      changed = true;
-    }
-  }
-
-  if (!changed) return;
-
-  await fs.writeFile(globalPkgJsonPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
-
-  const lockfilePath = path.join(pnpmGlobalDir, "pnpm-lock.yaml");
-  await fs.rm(lockfilePath, { force: true }).catch(() => {});
-}
-
-async function locatePnpmGlobalDir(): Promise<string | null> {
-  const result = await runCommandAndCapture("pnpm", ["root", "--global"], process.cwd());
-  if (result.exitCode !== 0) return null;
-  const globalRoot = result.stdout.trim();
-  return globalRoot ? path.dirname(globalRoot) : null;
 }
 
 async function runCommandAndCapture(

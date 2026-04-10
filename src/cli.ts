@@ -12,7 +12,6 @@ import {
   buildMissingProductionVersionDiagnostic,
   createArtifactDeployTag,
   readPackageMetadata,
-  fixPnpmGlobalFileRefs,
   stageAndPackLocal,
   withTemporaryPackageVersion,
 } from "./deploy/runtime";
@@ -1048,7 +1047,8 @@ async function executeArtifactDeploy(
   let result: Record<string, unknown>;
 
   if (isLocalGlobalInstall_) {
-    const staged = await stageAndPackLocal(packageDirectory, resolvedVersionValue);
+    const persistentCacheDir = stateStore.getPaths().cacheDirectory;
+    const staged = await stageAndPackLocal(packageDirectory, resolvedVersionValue, persistentCacheDir);
     try {
       const tarballArgs = executionToRun.args.map((arg) => {
         if (arg === packageDirectory || path.resolve(arg) === path.resolve(packageDirectory)) {
@@ -1060,7 +1060,6 @@ async function executeArtifactDeploy(
       result = await executePlanItem(artifactExecution.runnerName, tarballExecution, runtimeContext, diagnostics);
     } finally {
       await staged.cleanup();
-      await fixPnpmGlobalFileRefs(packageMetadata.name, packageDirectory);
     }
   } else {
     result = await withTemporaryPackageVersion(packageDirectory, resolvedVersionValue, async () => {
