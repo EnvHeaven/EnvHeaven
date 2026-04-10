@@ -12,7 +12,6 @@ import {
   buildMissingProductionVersionDiagnostic,
   createArtifactDeployTag,
   readPackageMetadata,
-  withPermanentPackageVersion,
   withTemporaryPackageVersion,
 } from "./deploy/runtime";
 import { applyPnpmRecursiveFilter, isLocalGlobalInstall } from "./deploy/plan-filter";
