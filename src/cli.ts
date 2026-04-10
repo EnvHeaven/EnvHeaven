@@ -12,6 +12,7 @@ import {
   buildMissingProductionVersionDiagnostic,
   createArtifactDeployTag,
   readPackageMetadata,
+  stageAndPackLocal,
   withTemporaryPackageVersion,
 } from "./deploy/runtime";
 import { applyPnpmRecursiveFilter, isLocalGlobalInstall } from "./deploy/plan-filter";
@@ -894,7 +895,7 @@ async function executeDeployPlan(
 
   for (const artifactExecution of plan.artifactExecutions) {
     verboseLog(`deploy step start: ${artifactExecution.runnerName}`, options);
-    const hydratedExecution = await hydrateArtifactExecution(
+    const hydrated = await hydrateArtifactExecution(
       artifactExecution,
       runtimeContext.repoRoot,
       diagnostics,
@@ -903,7 +904,8 @@ async function executeDeployPlan(
     );
     const result = await executeArtifactDeploy(
       artifactExecution,
-      hydratedExecution,
+      hydrated.execution,
+      hydrated.resolvedVersion,
       runtimeContext,
       diagnostics,
       stateStore,
@@ -926,8 +928,8 @@ async function hydrateArtifactExecution(
   diagnostics: Diagnostic[],
   stateStore: EnvHeavenStateStore,
   deployTarget: string,
-): Promise<ExecutionSpec | null> {
-  if (!artifactExecution.execution) return null;
+): Promise<{ execution: ExecutionSpec | null; resolvedVersion: string }> {
+  if (!artifactExecution.execution) return { execution: null, resolvedVersion: "0.1.0" };
 
   const packageDirectory = artifactExecution.repoCloneFolderPath
     ? path.resolve(repoRoot, artifactExecution.repoCloneFolderPath)
@@ -973,22 +975,26 @@ async function hydrateArtifactExecution(
   }
 
   return {
-    ...artifactExecution.execution,
-    args: artifactExecution.execution.args.map((arg) =>
-      materializeDynamicVersionToken(arg, artifactExecution.artifactName, resolvedVersionValue),
-    ),
-    env: Object.fromEntries(
-      Object.entries(artifactExecution.execution.env).map(([key, value]) => [
-        key,
-        materializeDynamicVersionToken(value, artifactExecution.artifactName, resolvedVersionValue),
-      ]),
-    ),
+    execution: {
+      ...artifactExecution.execution,
+      args: artifactExecution.execution.args.map((arg) =>
+        materializeDynamicVersionToken(arg, artifactExecution.artifactName, resolvedVersionValue),
+      ),
+      env: Object.fromEntries(
+        Object.entries(artifactExecution.execution.env).map(([key, value]) => [
+          key,
+          materializeDynamicVersionToken(value, artifactExecution.artifactName, resolvedVersionValue),
+        ]),
+      ),
+    },
+    resolvedVersion: resolvedVersionValue,
   };
 }
 
 async function executeArtifactDeploy(
   artifactExecution: ArtifactExecutionPlan,
   hydratedExecution: ExecutionSpec | null,
+  hydratedVersion: string,
   runtimeContext: PluginRuntimeContext,
   diagnostics: Diagnostic[],
   stateStore: EnvHeavenStateStore,
@@ -1031,33 +1037,41 @@ async function executeArtifactDeploy(
   }
 
   const packageMetadata = await readPackageMetadata(packageDirectory);
-  const resolvedVersion = await stateStore.resolveArtifactVersion(
-    runtimeContext.repoRoot,
-    artifactExecution.artifactName,
-    artifactExecution.packageName ?? packageMetadata.name,
-    packageMetadata.version,
-  );
-
-  if (resolvedVersion.source === "fallback") {
-    diagnostics.push(buildMissingProductionVersionDiagnostic(artifactExecution.artifactName, packageMetadata.version));
-  }
+  const resolvedVersionValue = hydratedVersion;
 
   const executionToRun: ExecutionSpec = {
     ...hydratedExecution,
-    env: { ...hydratedExecution.env, EH_ARTIFACT_VERSION: resolvedVersion.value },
+    env: { ...hydratedExecution.env, EH_ARTIFACT_VERSION: resolvedVersionValue },
   };
 
-  const applyVersion = withTemporaryPackageVersion;
-  const result = await applyVersion(packageDirectory, resolvedVersion.value, async () => {
-    return await executePlanItem(artifactExecution.runnerName, executionToRun, runtimeContext, diagnostics);
-  });
+  let result: Record<string, unknown>;
+
+  if (isLocalGlobalInstall_) {
+    const staged = await stageAndPackLocal(packageDirectory, resolvedVersionValue);
+    try {
+      const tarballArgs = executionToRun.args.map((arg) => {
+        if (arg === packageDirectory || path.resolve(arg) === path.resolve(packageDirectory)) {
+          return staged.tarballPath;
+        }
+        return arg;
+      });
+      const tarballExecution: ExecutionSpec = { ...executionToRun, args: tarballArgs };
+      result = await executePlanItem(artifactExecution.runnerName, tarballExecution, runtimeContext, diagnostics);
+    } finally {
+      await staged.cleanup();
+    }
+  } else {
+    result = await withTemporaryPackageVersion(packageDirectory, resolvedVersionValue, async () => {
+      return await executePlanItem(artifactExecution.runnerName, executionToRun, runtimeContext, diagnostics);
+    });
+  }
 
   const payload: Record<string, unknown> = {
     artifactName: artifactExecution.artifactName,
     packageName: artifactExecution.packageName ?? packageMetadata.name,
     runnerName: artifactExecution.runnerName,
     status: artifactExecution.status,
-    version: resolvedVersion.value,
+    version: resolvedVersionValue,
     result,
   };
 
@@ -1066,7 +1080,7 @@ async function executeArtifactDeploy(
       runtimeContext.repoRoot,
       artifactExecution.artifactName,
       artifactExecution.packageName ?? packageMetadata.name,
-      resolvedVersion.value,
+      resolvedVersionValue,
     );
     payload.versionRegistry = updatedVersion;
 
@@ -1074,7 +1088,7 @@ async function executeArtifactDeploy(
       const tagResult = await createArtifactDeployTag(
         runtimeContext.repoRoot,
         packageDirectory,
-        resolvedVersion.value,
+        resolvedVersionValue,
         deployTarget,
       );
       payload.tag = tagResult;

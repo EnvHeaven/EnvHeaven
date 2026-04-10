@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createDiagnostic } from "../diagnostics";
 import { incrementPatchVersion, isValidVersionString } from "../state/store";
@@ -137,6 +138,105 @@ export function buildMissingProductionVersionDiagnostic(artifactName: string, pa
 
 export function computeNextVersionSuggestion(version: string): string {
   return incrementPatchVersion(version);
+}
+
+export interface StagedPackage {
+  tarballPath: string;
+  stagingDir: string;
+  cleanup: () => Promise<void>;
+}
+
+const STAGING_EXCLUDE = new Set([
+  "node_modules",
+  ".git",
+  ".angular",
+  ".replit-artifact",
+  ".replit",
+]);
+
+async function copyTree(src: string, dest: string): Promise<void> {
+  const entries = await fs.readdir(src, { withFileTypes: true });
+  await fs.mkdir(dest, { recursive: true });
+  for (const entry of entries) {
+    if (STAGING_EXCLUDE.has(entry.name)) continue;
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      await copyTree(srcPath, destPath);
+    } else {
+      await fs.copyFile(srcPath, destPath);
+    }
+  }
+}
+
+export async function stageAndPackLocal(
+  packageDirectory: string,
+  targetVersion: string,
+): Promise<StagedPackage> {
+  if (!isValidVersionString(targetVersion)) {
+    throw new Error(`Invalid package version "${targetVersion}".`);
+  }
+
+  const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "envheaven-stage-"));
+  const staged = path.join(stagingDir, "package");
+
+  await copyTree(packageDirectory, staged);
+
+  const stagedPkgJsonPath = path.join(staged, "package.json");
+  const raw = await fs.readFile(stagedPkgJsonPath, "utf8");
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  parsed.version = targetVersion;
+  await fs.writeFile(stagedPkgJsonPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+
+  const packResult = await runCommandAndCapture("npm", ["pack", "--pack-destination", stagingDir], staged);
+  if (packResult.exitCode !== 0) {
+    await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    throw new Error(`npm pack failed (exit ${String(packResult.exitCode)}): ${packResult.stderr}`);
+  }
+
+  const tarballName = packResult.stdout.trim().split("\n").pop()?.trim();
+  if (!tarballName) {
+    await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    throw new Error("npm pack produced no output filename.");
+  }
+
+  const tarballPath = path.join(stagingDir, tarballName);
+
+  return {
+    tarballPath,
+    stagingDir,
+    cleanup: async () => {
+      await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    },
+  };
+}
+
+async function runCommandAndCapture(
+  command: string,
+  args: string[],
+  cwd: string,
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  return await new Promise((resolve) => {
+    const child = spawn(command, args, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: false,
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on("close", (exitCode) => {
+      resolve({ exitCode: exitCode ?? 1, stdout, stderr });
+    });
+    child.on("error", (error) => {
+      resolve({ exitCode: 1, stdout, stderr: error.message });
+    });
+  });
 }
 
 async function runGitAndCapture(args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
