@@ -184,13 +184,13 @@ export async function stageAndPackLocal(
   let stagingDir: string;
   if (persistentCacheDir) {
     stagingDir = path.join(persistentCacheDir, "staging", safeName);
-    await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
     await fs.mkdir(stagingDir, { recursive: true });
   } else {
     stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "envheaven-stage-"));
   }
 
   const staged = path.join(stagingDir, "package");
+  await fs.rm(staged, { recursive: true, force: true }).catch(() => {});
 
   await copyTree(packageDirectory, staged);
 
@@ -200,7 +200,7 @@ export async function stageAndPackLocal(
   parsed.version = targetVersion;
   await fs.writeFile(stagedPkgJsonPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
 
-  const tarballName = `package-${targetVersion}.tgz`;
+  const tarballName = "package.tgz";
   const tarballPath = path.join(stagingDir, tarballName);
 
   const packResult = await runCommandAndCapture(
