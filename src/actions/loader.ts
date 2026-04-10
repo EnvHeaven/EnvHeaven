@@ -25,10 +25,13 @@ export interface ActionDefinition {
   successHelpers: ActionHelper[];
   failHelpers: ActionHelper[];
   pageHeaderOptions?: PageHeaderOptions;
+  isLocalUser?: boolean;
+  buttonColor?: string;
 }
 
 const ENV_DIR = ".envheaven";
 const ACTIONS_SUBDIR = "actions";
+const LOCAL_USER_SUBDIR = "local-user";
 const ACTION_SUFFIX = ".envheaven.action.json";
 const ARTIFACT_META_FILE = "artifact-meta.json";
 
@@ -42,8 +45,21 @@ export interface ArtifactMeta {
 
 export async function loadActions(repoRoot: string): Promise<ActionDefinition[]> {
   const actionsDir = path.join(repoRoot, ENV_DIR, ACTIONS_SUBDIR);
+  const localUserDir = path.join(actionsDir, LOCAL_USER_SUBDIR);
+  const actions: ActionDefinition[] = [];
+
+  const baseActions = await loadActionsFromDir(actionsDir, false);
+  actions.push(...baseActions);
+
+  const localActions = await loadActionsFromDir(localUserDir, true);
+  actions.push(...localActions);
+
+  return actions;
+}
+
+async function loadActionsFromDir(dir: string, isLocalUser: boolean): Promise<ActionDefinition[]> {
   try {
-    const files = await fs.readdir(actionsDir);
+    const files = await fs.readdir(dir);
     const actionFiles = files.filter((f) => f.endsWith(ACTION_SUFFIX));
 
     if (actionFiles.length === 0) {
@@ -53,9 +69,9 @@ export async function loadActions(repoRoot: string): Promise<ActionDefinition[]>
     const actions: ActionDefinition[] = [];
     for (const file of actionFiles.sort()) {
       try {
-        const raw = await fs.readFile(path.join(actionsDir, file), "utf8");
+        const raw = await fs.readFile(path.join(dir, file), "utf8");
         const parsed = JSON.parse(raw) as Record<string, unknown>;
-        const action = normalizeAction(parsed);
+        const action = normalizeAction(parsed, isLocalUser);
         if (action) {
           actions.push(action);
         }
@@ -72,15 +88,47 @@ export async function loadActions(repoRoot: string): Promise<ActionDefinition[]>
 
 export async function deleteAction(repoRoot: string, actionId: string): Promise<void> {
   const actionsDir = path.join(repoRoot, ENV_DIR, ACTIONS_SUBDIR);
-  const filePath = path.join(actionsDir, `${actionId}${ACTION_SUFFIX}`);
-  await fs.unlink(filePath);
+  const basePath = path.join(actionsDir, `${actionId}${ACTION_SUFFIX}`);
+  const localPath = path.join(actionsDir, LOCAL_USER_SUBDIR, `${actionId}${ACTION_SUFFIX}`);
+
+  try {
+    await fs.unlink(localPath);
+    return;
+  } catch {
+    // not in local-user, try base
+  }
+
+  await fs.unlink(basePath);
 }
 
 export async function saveAction(repoRoot: string, action: ActionDefinition): Promise<void> {
   const actionsDir = path.join(repoRoot, ENV_DIR, ACTIONS_SUBDIR);
-  await fs.mkdir(actionsDir, { recursive: true });
-  const filePath = path.join(actionsDir, `${action.id}${ACTION_SUFFIX}`);
-  await fs.writeFile(filePath, JSON.stringify(action, null, 2) + "\n", "utf8");
+  const targetDir = action.isLocalUser
+    ? path.join(actionsDir, LOCAL_USER_SUBDIR)
+    : actionsDir;
+  await fs.mkdir(targetDir, { recursive: true });
+  const filePath = path.join(targetDir, `${action.id}${ACTION_SUFFIX}`);
+  const toWrite = { ...action };
+  delete toWrite.isLocalUser;
+  await fs.writeFile(filePath, JSON.stringify(toWrite, null, 2) + "\n", "utf8");
+}
+
+export async function moveAction(repoRoot: string, actionId: string, toLocalUser: boolean): Promise<void> {
+  const actionsDir = path.join(repoRoot, ENV_DIR, ACTIONS_SUBDIR);
+  const basePath = path.join(actionsDir, `${actionId}${ACTION_SUFFIX}`);
+  const localDir = path.join(actionsDir, LOCAL_USER_SUBDIR);
+  const localPath = path.join(localDir, `${actionId}${ACTION_SUFFIX}`);
+
+  if (toLocalUser) {
+    await fs.mkdir(localDir, { recursive: true });
+    const raw = await fs.readFile(basePath, "utf8");
+    await fs.writeFile(localPath, raw, "utf8");
+    await fs.unlink(basePath);
+  } else {
+    const raw = await fs.readFile(localPath, "utf8");
+    await fs.writeFile(basePath, raw, "utf8");
+    await fs.unlink(localPath);
+  }
 }
 
 export async function loadArtifactMeta(repoRoot: string): Promise<ArtifactMeta> {
@@ -100,7 +148,7 @@ export async function saveArtifactMeta(repoRoot: string, meta: ArtifactMeta): Pr
   await fs.writeFile(metaPath, JSON.stringify(meta, null, 2) + "\n", "utf8");
 }
 
-function normalizeAction(parsed: Record<string, unknown>): ActionDefinition | null {
+function normalizeAction(parsed: Record<string, unknown>, isLocalUser = false): ActionDefinition | null {
   if (typeof parsed["id"] !== "string" || typeof parsed["runCommand"] !== "string") {
     return null;
   }
@@ -117,6 +165,8 @@ function normalizeAction(parsed: Record<string, unknown>): ActionDefinition | nu
     successHelpers: normalizeHelpers(parsed["successHelpers"]),
     failHelpers: normalizeHelpers(parsed["failHelpers"]),
     pageHeaderOptions: normalizePageHeaderOptions(parsed["pageHeaderOptions"]),
+    isLocalUser,
+    buttonColor: typeof parsed["buttonColor"] === "string" ? parsed["buttonColor"] : undefined,
   };
 }
 

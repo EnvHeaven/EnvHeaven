@@ -16,7 +16,7 @@ import {
   type ArtifactVersionRecord,
   type RepoStateRecord,
 } from "../state/store";
-import { loadActions, saveAction, deleteAction, loadArtifactMeta, saveArtifactMeta, normalizePageHeaderOptions, type ActionDefinition } from "../actions/loader";
+import { loadActions, saveAction, deleteAction, moveAction, loadArtifactMeta, saveArtifactMeta, normalizePageHeaderOptions, type ActionDefinition } from "../actions/loader";
 import type { RepoModel, SupportedTarget } from "../types";
 
 const SUPPORTED_TARGETS: SupportedTarget[] = ["default", "local", "local-01", "fake-local", "fake-local-01"];
@@ -543,6 +543,8 @@ export async function startDaemon(
           successHelpers: normalizeHelperArray(payload.successHelpers),
           failHelpers: normalizeHelperArray(payload.failHelpers),
           pageHeaderOptions: normalizePageHeaderOptions(payload.pageHeaderOptions),
+          isLocalUser: payload.isLocalUser === true,
+          buttonColor: typeof payload.buttonColor === "string" ? payload.buttonColor : undefined,
         };
 
         await saveAction(configRepoRoot, action);
@@ -618,6 +620,51 @@ export async function startDaemon(
         }
         sendJson(response, 200, { ok: true, actionId: rawId });
         broadcastEvent({ type: "actions:updated", payload: { repoRoot: resolvedDeleteRoot } });
+        return;
+      }
+
+      // ─── POST /api/actions/move ─────────────────────────────────────────
+      if (url.pathname === "/api/actions/move" && request.method === "POST") {
+        if (!isTrustedOrigin(request)) {
+          sendJson(response, 403, { error: "Cross-origin mutation requests are not allowed." });
+          return;
+        }
+        const payload = await readJsonBody(request);
+        const moveRepoRoot = typeof payload.repoRoot === "string" ? path.resolve(payload.repoRoot) : "";
+        const moveActionId = typeof payload.actionId === "string" ? payload.actionId : "";
+        const toLocalUser = payload.toLocalUser === true;
+
+        if (!moveRepoRoot) {
+          sendJson(response, 400, { error: "repoRoot is required." });
+          return;
+        }
+        if (!moveActionId) {
+          sendJson(response, 400, { error: "actionId is required." });
+          return;
+        }
+
+        try {
+          await moveAction(moveRepoRoot, moveActionId, toLocalUser);
+          sendJson(response, 200, { ok: true, actionId: moveActionId, toLocalUser });
+          broadcastEvent({ type: "actions:updated", payload: { repoRoot: moveRepoRoot } });
+        } catch (err) {
+          sendJson(response, 500, { error: err instanceof Error ? err.message : "Failed to move action." });
+        }
+        return;
+      }
+
+      // ─── GET /api/actions/runs/logs ─────────────────────────────────────
+      if (url.pathname === "/api/actions/runs/logs" && request.method === "GET") {
+        const runsWithLogs = Array.from(actionRuns.values()).map((run) => ({
+          runId: run.runId,
+          actionId: run.actionId,
+          status: run.status,
+          exitCode: run.exitCode,
+          startedAt: run.startedAt,
+          helpers: run.helpers,
+          lines: run.lines.map((l) => ({ stream: l.stream, data: l.data, ts: l.ts })),
+        }));
+        sendJson(response, 200, { runs: runsWithLogs }, true);
         return;
       }
 
