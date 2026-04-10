@@ -12,6 +12,7 @@ import {
   buildMissingProductionVersionDiagnostic,
   createArtifactDeployTag,
   readPackageMetadata,
+  fixPnpmGlobalFileRefs,
   stageAndPackLocal,
   withTemporaryPackageVersion,
 } from "./deploy/runtime";
@@ -1059,6 +1060,7 @@ async function executeArtifactDeploy(
       result = await executePlanItem(artifactExecution.runnerName, tarballExecution, runtimeContext, diagnostics);
     } finally {
       await staged.cleanup();
+      await fixPnpmGlobalFileRefs();
     }
   } else {
     result = await withTemporaryPackageVersion(packageDirectory, resolvedVersionValue, async () => {

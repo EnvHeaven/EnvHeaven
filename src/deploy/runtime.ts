@@ -210,6 +210,56 @@ export async function stageAndPackLocal(
   };
 }
 
+export async function fixPnpmGlobalFileRefs(): Promise<void> {
+  const pnpmGlobalDir = await locatePnpmGlobalDir();
+  if (!pnpmGlobalDir) return;
+
+  const globalPkgJsonPath = path.join(pnpmGlobalDir, "package.json");
+  let raw: string;
+  try {
+    raw = await fs.readFile(globalPkgJsonPath, "utf8");
+  } catch {
+    return;
+  }
+
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  const deps = parsed.dependencies as Record<string, string> | undefined;
+  if (!deps) return;
+
+  let changed = false;
+  for (const [name, spec] of Object.entries(deps)) {
+    if (typeof spec === "string" && (spec.startsWith("file:") || spec.startsWith("/"))) {
+      const linkedPkgJsonPath = spec.startsWith("file:")
+        ? path.join(spec.slice(5), "package.json")
+        : path.join(spec, "package.json");
+      let version = "0.0.0";
+      try {
+        const linkedRaw = await fs.readFile(linkedPkgJsonPath, "utf8");
+        const linkedParsed = JSON.parse(linkedRaw) as Record<string, unknown>;
+        if (typeof linkedParsed.version === "string") version = linkedParsed.version;
+      } catch {
+        // noop
+      }
+      deps[name] = version;
+      changed = true;
+    }
+  }
+
+  if (!changed) return;
+
+  await fs.writeFile(globalPkgJsonPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+
+  const lockfilePath = path.join(pnpmGlobalDir, "pnpm-lock.yaml");
+  await fs.rm(lockfilePath, { force: true }).catch(() => {});
+}
+
+async function locatePnpmGlobalDir(): Promise<string | null> {
+  const result = await runCommandAndCapture("pnpm", ["root", "--global"], process.cwd());
+  if (result.exitCode !== 0) return null;
+  const globalRoot = result.stdout.trim();
+  return globalRoot ? path.dirname(globalRoot) : null;
+}
+
 async function runCommandAndCapture(
   command: string,
   args: string[],
