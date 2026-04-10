@@ -188,19 +188,18 @@ export async function stageAndPackLocal(
   parsed.version = targetVersion;
   await fs.writeFile(stagedPkgJsonPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
 
-  const packResult = await runCommandAndCapture("npm", ["pack", "--ignore-scripts", "--pack-destination", stagingDir], staged);
+  const tarballName = `package-${targetVersion}.tgz`;
+  const tarballPath = path.join(stagingDir, tarballName);
+
+  const packResult = await runCommandAndCapture(
+    "tar",
+    ["czf", tarballPath, "-C", stagingDir, "package"],
+    stagingDir,
+  );
   if (packResult.exitCode !== 0) {
     await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
-    throw new Error(`npm pack failed (exit ${String(packResult.exitCode)}): ${packResult.stderr}`);
+    throw new Error(`tar pack failed (exit ${String(packResult.exitCode)}): ${packResult.stderr}`);
   }
-
-  const tarballName = packResult.stdout.trim().split("\n").pop()?.trim();
-  if (!tarballName) {
-    await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
-    throw new Error("npm pack produced no output filename.");
-  }
-
-  const tarballPath = path.join(stagingDir, tarballName);
 
   return {
     tarballPath,
