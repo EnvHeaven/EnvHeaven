@@ -188,7 +188,7 @@ export async function stageAndPackLocal(
   parsed.version = targetVersion;
   await fs.writeFile(stagedPkgJsonPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
 
-  const packResult = await runCommandAndCapture("npm", ["pack", "--pack-destination", stagingDir], staged);
+  const packResult = await runCommandAndCapture("npm", ["pack", "--ignore-scripts", "--pack-destination", stagingDir], staged);
   if (packResult.exitCode !== 0) {
     await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
     throw new Error(`npm pack failed (exit ${String(packResult.exitCode)}): ${packResult.stderr}`);
