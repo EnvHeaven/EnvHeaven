@@ -39,6 +39,9 @@ import type {
 } from "./types";
 
 const PACKAGE_VERSION: string = (() => {
+  const store = new EnvHeavenStateStore();
+  const installed = store.readInstalledCliVersionSync();
+  if (installed) return installed;
   try {
     const pkgPath = path.join(__dirname, "..", "package.json");
     return (JSON.parse(readFileSync(pkgPath, "utf8")) as { version: string }).version;
@@ -1084,6 +1087,11 @@ async function executeArtifactDeploy(
       resolvedVersionValue,
     );
     payload.versionRegistry = updatedVersion;
+
+    const installedPackageName = artifactExecution.packageName ?? packageMetadata.name;
+    if (installedPackageName === "envheaven") {
+      await stateStore.writeInstalledCliVersion(resolvedVersionValue);
+    }
 
     if (packageDirectory) {
       const tagResult = await createArtifactDeployTag(

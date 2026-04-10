@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { promises as fs, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -259,6 +259,21 @@ export class EnvHeavenStateStore {
     this.cache = normalizeStateFile(state);
     await fs.mkdir(this.paths.stateDirectory, { recursive: true });
     await fs.writeFile(this.paths.stateFilePath, `${JSON.stringify(this.cache, null, 2)}\n`, "utf8");
+  }
+
+  async writeInstalledCliVersion(version: string): Promise<void> {
+    await fs.mkdir(this.paths.stateDirectory, { recursive: true });
+    const versionFilePath = path.join(this.paths.stateDirectory, "cli-version");
+    await fs.writeFile(versionFilePath, version, "utf8");
+  }
+
+  readInstalledCliVersionSync(): string | null {
+    try {
+      const versionFilePath = path.join(this.paths.stateDirectory, "cli-version");
+      return readFileSync(versionFilePath, "utf8").trim() || null;
+    } catch {
+      return null;
+    }
   }
 }
 
