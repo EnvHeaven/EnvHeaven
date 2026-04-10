@@ -1060,7 +1060,7 @@ async function executeArtifactDeploy(
       result = await executePlanItem(artifactExecution.runnerName, tarballExecution, runtimeContext, diagnostics);
     } finally {
       await staged.cleanup();
-      await fixPnpmGlobalFileRefs();
+      await fixPnpmGlobalFileRefs(packageMetadata.name, packageDirectory);
     }
   } else {
     result = await withTemporaryPackageVersion(packageDirectory, resolvedVersionValue, async () => {

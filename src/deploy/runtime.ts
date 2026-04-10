@@ -210,7 +210,10 @@ export async function stageAndPackLocal(
   };
 }
 
-export async function fixPnpmGlobalFileRefs(): Promise<void> {
+export async function fixPnpmGlobalFileRefs(
+  packageName: string,
+  sourcePackageDir: string,
+): Promise<void> {
   const pnpmGlobalDir = await locatePnpmGlobalDir();
   if (!pnpmGlobalDir) return;
 
@@ -228,19 +231,12 @@ export async function fixPnpmGlobalFileRefs(): Promise<void> {
 
   let changed = false;
   for (const [name, spec] of Object.entries(deps)) {
-    if (typeof spec === "string" && (spec.startsWith("file:") || spec.startsWith("/"))) {
-      const linkedPkgJsonPath = spec.startsWith("file:")
-        ? path.join(spec.slice(5), "package.json")
-        : path.join(spec, "package.json");
-      let version = "0.0.0";
-      try {
-        const linkedRaw = await fs.readFile(linkedPkgJsonPath, "utf8");
-        const linkedParsed = JSON.parse(linkedRaw) as Record<string, unknown>;
-        if (typeof linkedParsed.version === "string") version = linkedParsed.version;
-      } catch {
-        // noop
-      }
-      deps[name] = version;
+    if (typeof spec !== "string") continue;
+    const isTarballRef = spec.startsWith("file:") && spec.endsWith(".tgz");
+    const isTmpRef = spec.startsWith("file:/tmp/") || spec.startsWith("/tmp/");
+    if (isTarballRef || isTmpRef) {
+      const linkTarget = name === packageName ? sourcePackageDir : spec;
+      deps[name] = `link:${linkTarget}`;
       changed = true;
     }
   }
