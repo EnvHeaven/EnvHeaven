@@ -442,7 +442,7 @@ function materializeArtifactExecutions(
       runnerValue,
       repoModel.rootDirectory,
       templateContext,
-      true,
+      false,
       blockedByPlanErrors,
       artifactDiagnostics,
       materializationTrace,

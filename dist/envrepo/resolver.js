@@ -292,7 +292,7 @@ function materializeArtifactExecutions(repoModel, resolvedModel, resolvedTarget,
             });
             continue;
         }
-        const materializedExecution = materializeExecutionRecord(runnerName, artifactName, executionRecord, runnerValue, repoModel.rootDirectory, templateContext, true, blockedByPlanErrors, artifactDiagnostics, materializationTrace);
+        const materializedExecution = materializeExecutionRecord(runnerName, artifactName, executionRecord, runnerValue, repoModel.rootDirectory, templateContext, false, blockedByPlanErrors, artifactDiagnostics, materializationTrace);
         if (materializedExecution) {
             const layerEnvVars = normalizeStringMap(finalArtifact.EnvVars ?? finalArtifact.envVars);
             if (Object.keys(layerEnvVars).length > 0) {
