@@ -4,7 +4,14 @@ import http from "node:http";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
-import * as pty from "node-pty";
+type NodePty = typeof import("node-pty");
+let _pty: NodePty | undefined;
+async function loadPty(): Promise<NodePty> {
+  if (!_pty) {
+    _pty = await import("node-pty");
+  }
+  return _pty;
+}
 import { buildRepoModel } from "../envrepo/model";
 import { discoverEnvRepo } from "../envrepo/discovery";
 import { resolvePlan } from "../envrepo/resolver";
@@ -57,7 +64,7 @@ interface PtyRun {
   status: "running" | "success" | "error" | "stopped";
   exitCode: number | null;
   helpers: ActionDefinition["successHelpers"];
-  ptyProcess: pty.IPty | null;
+  ptyProcess: import("node-pty").IPty | null;
   wsClients: Set<WebSocket>;
   replayBuffer: string[];
   replayBytes: number;
@@ -243,12 +250,13 @@ export async function startDaemon(
 
   const ptyRuns = new Map<string, PtyRun>();
 
-  function dispatchPtyAction(actionId: string, action: ActionDefinition, repoRoot: string): PtyRun {
+  async function dispatchPtyAction(actionId: string, action: ActionDefinition, repoRoot: string): Promise<PtyRun> {
     const runId = randomUUID();
     if (!action.runCommand.trim()) throw new Error(`Action "${actionId}" has an empty runCommand.`);
 
+    const ptyMod = await loadPty();
     const shell = process.env.SHELL ?? "sh";
-    const ptyProcess = pty.spawn(shell, ["-lc", action.runCommand], {
+    const ptyProcess = ptyMod.spawn(shell, ["-lc", action.runCommand], {
       name: "xterm-256color",
       cols: 120,
       rows: 30,
@@ -635,7 +643,7 @@ export async function startDaemon(
 
         const terminalMode = action.terminalMode ?? "pty";
         if (terminalMode === "pty") {
-          const ptyRun = dispatchPtyAction(actionId, action, repoRoot);
+          const ptyRun = await dispatchPtyAction(actionId, action, repoRoot);
           sendJson(response, 200, { ok: true, runId: ptyRun.runId, actionId, status: "running", terminalMode: "pty" });
         } else {
           const run = dispatchAction(actionId, action, repoRoot);
