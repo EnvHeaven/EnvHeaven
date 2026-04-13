@@ -50,7 +50,7 @@ export declare class EnvHeavenStateStore {
     }>;
     incrementArtifactExpVersion(repoRoot: string, artifactName: string, packageName: string | undefined, fallbackVersion?: string): Promise<ArtifactVersionRecord>;
     incrementArtifactMinorVersion(repoRoot: string, artifactName: string, packageName: string | undefined, fallbackVersion?: string): Promise<ArtifactVersionRecord>;
-    advanceArtifactVersion(repoRoot: string, artifactName: string, packageName: string | undefined, deployedVersion: string): Promise<ArtifactVersionRecord>;
+    advanceArtifactVersion(repoRoot: string, artifactName: string, packageName: string | undefined, deployedVersion: string, deployTarget?: string): Promise<ArtifactVersionRecord>;
     private ensureRepo;
     private requireRepo;
     private loadState;

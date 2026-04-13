@@ -1016,7 +1016,7 @@ async function executeArtifactDeploy(artifactExecution, hydratedExecution, hydra
         result,
     };
     if ((result.exitCode ?? 0) === 0) {
-        const updatedVersion = await stateStore.advanceArtifactVersion(runtimeContext.repoRoot, artifactExecution.artifactName, artifactExecution.packageName ?? packageMetadata.name, resolvedVersionValue);
+        const updatedVersion = await stateStore.advanceArtifactVersion(runtimeContext.repoRoot, artifactExecution.artifactName, artifactExecution.packageName ?? packageMetadata.name, resolvedVersionValue, deployTarget);
         payload.versionRegistry = updatedVersion;
         const installedPackageName = artifactExecution.packageName ?? packageMetadata.name;
         if (installedPackageName === "envheaven") {

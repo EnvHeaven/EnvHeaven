@@ -1306,6 +1306,7 @@ async function executeArtifactDeploy(
       artifactExecution.artifactName,
       artifactExecution.packageName ?? packageMetadata.name,
       resolvedVersionValue,
+      deployTarget,
     );
     payload.versionRegistry = updatedVersion;
 

@@ -155,10 +155,14 @@ class EnvHeavenStateStore {
             nextVersion,
         });
     }
-    async advanceArtifactVersion(repoRoot, artifactName, packageName, deployedVersion) {
+    async advanceArtifactVersion(repoRoot, artifactName, packageName, deployedVersion, deployTarget) {
+        const isLocalTarget = deployTarget?.toLowerCase().includes("local") ?? false;
+        const nextVersion = isLocalTarget
+            ? incrementExpVersion(deployedVersion)
+            : incrementPatchVersion(deployedVersion);
         return await this.setArtifactVersion(repoRoot, artifactName, packageName, {
             lastVersion: deployedVersion,
-            nextVersion: incrementPatchVersion(deployedVersion),
+            nextVersion,
         });
     }
     async ensureRepo(repoRoot) {

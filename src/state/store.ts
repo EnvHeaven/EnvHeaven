@@ -235,10 +235,15 @@ export class EnvHeavenStateStore {
     artifactName: string,
     packageName: string | undefined,
     deployedVersion: string,
+    deployTarget?: string,
   ): Promise<ArtifactVersionRecord> {
+    const isLocalTarget = deployTarget?.toLowerCase().includes("local") ?? false;
+    const nextVersion = isLocalTarget
+      ? incrementExpVersion(deployedVersion)
+      : incrementPatchVersion(deployedVersion);
     return await this.setArtifactVersion(repoRoot, artifactName, packageName, {
       lastVersion: deployedVersion,
-      nextVersion: incrementPatchVersion(deployedVersion),
+      nextVersion,
     });
   }
 
