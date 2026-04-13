@@ -196,6 +196,36 @@ export class EnvHeavenStateStore {
     return { record, bootstrapped: true };
   }
 
+  async incrementArtifactExpVersion(
+    repoRoot: string,
+    artifactName: string,
+    packageName: string | undefined,
+    fallbackVersion?: string,
+  ): Promise<ArtifactVersionRecord> {
+    const existing = await this.getVersionRecord(repoRoot, artifactName, packageName);
+    const baseVersion = existing?.nextVersion ?? existing?.lastVersion ?? fallbackVersion ?? "0.1.0";
+    const nextVersion = incrementExpVersion(baseVersion);
+    return await this.setArtifactVersion(repoRoot, artifactName, packageName, {
+      lastVersion: existing?.lastVersion,
+      nextVersion,
+    });
+  }
+
+  async incrementArtifactMinorVersion(
+    repoRoot: string,
+    artifactName: string,
+    packageName: string | undefined,
+    fallbackVersion?: string,
+  ): Promise<ArtifactVersionRecord> {
+    const existing = await this.getVersionRecord(repoRoot, artifactName, packageName);
+    const baseVersion = existing?.nextVersion ?? existing?.lastVersion ?? fallbackVersion ?? "0.1.0";
+    const nextVersion = incrementMinorVersion(baseVersion);
+    return await this.setArtifactVersion(repoRoot, artifactName, packageName, {
+      lastVersion: existing?.lastVersion,
+      nextVersion,
+    });
+  }
+
   async advanceArtifactVersion(
     repoRoot: string,
     artifactName: string,
@@ -323,8 +353,51 @@ export function incrementPatchVersion(version: string): string {
   return `${parsed.major}.${parsed.minor}.${parsed.patch + 1}`;
 }
 
+export function incrementMinorVersion(version: string): string {
+  const exp = parseExpVersion(version);
+  if (exp) {
+    return `${exp.major}.${exp.minor + 1}.0`;
+  }
+  const parsed = parseVersion(version);
+  if (!parsed) {
+    return "0.2.0";
+  }
+  return `${parsed.major}.${parsed.minor + 1}.0`;
+}
+
+export function incrementExpVersion(version: string): string {
+  const exp = parseExpVersion(version);
+  if (exp) {
+    return `${exp.major}.${exp.minor}.${exp.patch}.exp.${exp.exp + 1}`;
+  }
+  const parsed = parseVersion(version);
+  if (parsed) {
+    return `${parsed.major}.${parsed.minor}.${parsed.patch + 1}.exp.0`;
+  }
+  return "0.1.1.exp.0";
+}
+
+export function parseExpVersion(
+  value: string,
+): { major: number; minor: number; patch: number; exp: number } | null {
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\.exp\.(0|[1-9]\d*)$/.exec(value.trim());
+  if (!match) {
+    return null;
+  }
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    exp: Number(match[4]),
+  };
+}
+
 export function isValidVersionString(value: string): boolean {
-  return parseVersion(value) !== null;
+  return parseVersion(value) !== null || parseExpVersion(value) !== null;
+}
+
+export function isValidExpVersionString(value: string): boolean {
+  return parseExpVersion(value) !== null;
 }
 
 function normalizeStateFile(input: Partial<EnvHeavenStateFile>): EnvHeavenStateFile {

@@ -31,8 +31,9 @@ const SPECIAL_COMMAND_KEYWORDS = new Set([
   "version",
 ]);
 
-const NOUN_COMMANDS = new Set(["daemon", "ui"]);
+const NOUN_COMMANDS = new Set(["daemon", "ui", "apply"]);
 const NOUN_SUBCOMMANDS = new Set(["stop", "restart", "status"]);
+const APPLY_SUBCOMMANDS = new Set(["version"]);
 
 const HARD_REJECT_KEYWORDS = new Set(["last"]);
 
@@ -149,6 +150,27 @@ export function inferCommandIntent(args: string[]): {
         intent: null,
         diagnostics: [
           createDiagnostic("error", "unsupported-command-shape", `Unsupported daemon subcommand: "${normalizedTokens.slice(1).join(" ")}". Valid: stop, restart, status.`),
+        ],
+      };
+    }
+
+    // Handle: apply version
+    if (normalizedTokens.length >= 1 && normalizedTokens[0] === "apply") {
+      if (normalizedTokens.length === 2 && APPLY_SUBCOMMANDS.has(normalizedTokens[1])) {
+        return {
+          intent: {
+            kind: "apply",
+            subcommand: normalizedTokens[1] as "version",
+            rawArgs: args,
+            normalizedTokens,
+          },
+          diagnostics: [],
+        };
+      }
+      return {
+        intent: null,
+        diagnostics: [
+          createDiagnostic("error", "unsupported-command-shape", `Unsupported apply subcommand: "${normalizedTokens.slice(1).join(" ")}". Valid: version.`),
         ],
       };
     }

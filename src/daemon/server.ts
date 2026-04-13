@@ -12,6 +12,8 @@ import { computeNextVersionSuggestion, readPackageMetadata } from "../deploy/run
 import {
   EnvHeavenStateStore,
   incrementPatchVersion,
+  incrementMinorVersion,
+  incrementExpVersion,
   isValidVersionString,
   type ArtifactVersionRecord,
   type RepoStateRecord,
@@ -416,6 +418,58 @@ export async function startDaemon(
         const record = await stateStore.incrementArtifactNextVersion(incrRepoRoot, artifactName, packageName, baseVersion);
         sendJson(response, 200, { ok: true, record });
         broadcastEvent({ type: "version:incremented", payload: { artifactName, record } });
+        return;
+      }
+
+      // ─── POST /api/versions/increment-minor ─────────────────────────────
+      if (url.pathname === "/api/versions/increment-minor" && request.method === "POST") {
+        if (!isTrustedOrigin(request)) {
+          sendJson(response, 403, { error: "Cross-origin mutation requests are not allowed." });
+          return;
+        }
+        const payload = await readJsonBody(request);
+        const incrRepoRoot = typeof payload.repoRoot === "string" ? path.resolve(payload.repoRoot) : "";
+        if (!incrRepoRoot) {
+          sendJson(response, 400, { error: "repoRoot is required." });
+          return;
+        }
+        const artifactName = typeof payload.artifactName === "string" ? payload.artifactName : "";
+        const packageName = typeof payload.packageName === "string" ? payload.packageName : undefined;
+
+        if (!artifactName) {
+          sendJson(response, 400, { error: "artifactName is required." });
+          return;
+        }
+
+        const record = await stateStore.incrementArtifactMinorVersion(incrRepoRoot, artifactName, packageName);
+        sendJson(response, 200, { ok: true, record });
+        broadcastEvent({ type: "version:incremented", payload: { artifactName, record, track: "minor" } });
+        return;
+      }
+
+      // ─── POST /api/versions/increment-exp ───────────────────────────────
+      if (url.pathname === "/api/versions/increment-exp" && request.method === "POST") {
+        if (!isTrustedOrigin(request)) {
+          sendJson(response, 403, { error: "Cross-origin mutation requests are not allowed." });
+          return;
+        }
+        const payload = await readJsonBody(request);
+        const incrRepoRoot = typeof payload.repoRoot === "string" ? path.resolve(payload.repoRoot) : "";
+        if (!incrRepoRoot) {
+          sendJson(response, 400, { error: "repoRoot is required." });
+          return;
+        }
+        const artifactName = typeof payload.artifactName === "string" ? payload.artifactName : "";
+        const packageName = typeof payload.packageName === "string" ? payload.packageName : undefined;
+
+        if (!artifactName) {
+          sendJson(response, 400, { error: "artifactName is required." });
+          return;
+        }
+
+        const record = await stateStore.incrementArtifactExpVersion(incrRepoRoot, artifactName, packageName);
+        sendJson(response, 200, { ok: true, record });
+        broadcastEvent({ type: "version:incremented", payload: { artifactName, record, track: "exp" } });
         return;
       }
 

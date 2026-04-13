@@ -23,6 +23,7 @@ import { buildRepoModel } from "./envrepo/model";
 import { resolvePlan } from "./envrepo/resolver";
 import { resolveWorkspaceRoot } from "./envrepo/workspace-routing";
 import { spawnExecution } from "./execution/spawn";
+import { extractPortFromExecution, killPortHolder } from "./execution/port-utils";
 import {
   buildChallengeFromResolvedModel,
   executeCliChallenge,
@@ -583,6 +584,50 @@ async function main(): Promise<void> {
   }
   // ──────────────────────────────────────────────────────────────────────
 
+  if (intent.kind === "apply" && intent.subcommand === "version") {
+    const discovery = await discoverEnvRepo(repoRoot);
+    const repoModel = buildRepoModel(discovery);
+    const versionRecords = await stateStore.getVersionRecords(repoRoot);
+    const applyResults: Array<{ artifactName: string; packageName?: string; version: string; packageJsonPath: string; applied: boolean; error?: string }> = [];
+    const applyDiagnostics: Diagnostic[] = [...intentDiagnostics];
+
+    for (const record of versionRecords) {
+      const targetVersion = record.nextVersion ?? record.lastVersion;
+      if (!targetVersion) continue;
+
+      const artifactConfig = repoModel.artifacts[record.artifactName];
+      let pkgDir: string | undefined;
+      if (artifactConfig && typeof artifactConfig["RepoCloneFolderPath"] === "string") {
+        pkgDir = path.resolve(repoRoot, artifactConfig["RepoCloneFolderPath"] as string);
+      }
+      if (!pkgDir) {
+        const candidates = discovery.files
+          .filter((f) => f.fileName === "package.json" && f.payload && (f.payload as Record<string, unknown>)["name"] === record.packageName)
+          .map((f) => path.dirname(f.sourcePath));
+        pkgDir = candidates[0];
+      }
+      if (!pkgDir) continue;
+
+      const packageJsonPath = path.join(pkgDir, "package.json");
+      try {
+        const raw = readFileSync(packageJsonPath, "utf8");
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        parsed.version = targetVersion;
+        const { promises: fsAsync } = await import("node:fs");
+        await fsAsync.writeFile(packageJsonPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+        applyResults.push({ artifactName: record.artifactName, packageName: record.packageName, version: targetVersion, packageJsonPath, applied: true });
+        applyDiagnostics.push(createDiagnostic("info", "version-applied", `Applied version "${targetVersion}" to ${packageJsonPath}.`));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Unknown error";
+        applyResults.push({ artifactName: record.artifactName, packageName: record.packageName, version: targetVersion, packageJsonPath, applied: false, error: msg });
+        applyDiagnostics.push(createDiagnostic("warning", "version-apply-failed", `Failed to apply version to ${packageJsonPath}: ${msg}`));
+      }
+    }
+
+    writeOutput({ intent, applyResults, diagnostics: applyDiagnostics }, hasErrors(applyDiagnostics) ? 1 : 0, options);
+    return;
+  }
+
   if (!intent.target) {
     writeOutput(
       {
@@ -602,7 +647,7 @@ async function main(): Promise<void> {
   verboseLog("repo discovery done", options);
 
   const repoModel = buildRepoModel(discovery);
-  const plan = resolvePlan(repoModel, intent.target, intent.kind);
+  const plan = resolvePlan(repoModel, intent.target, intent.kind as "run" | "deploy");
   verboseLog("plan resolved", options);
 
   const diagnostics: Diagnostic[] = [...intentDiagnostics, ...plan.diagnostics];
@@ -629,11 +674,38 @@ async function main(): Promise<void> {
       plan.pluginPackage = plan.execution?.pluginPackage;
     }
 
+    const runExec = plan.execution;
+    if (runExec && !runExec.pluginPackage) {
+      const port = extractPortFromExecution(runExec.args, runExec.env);
+      if (port) {
+        const portResult = await killPortHolder(port);
+        if (portResult.wasInUse && portResult.killed) {
+          diagnostics.push(
+            createDiagnostic(
+              "warning",
+              "port-conflict-resolved",
+              `Port ${String(port)} was in use (PID ${String(portResult.pid ?? "?")}) — process terminated before starting.`,
+            ),
+          );
+        } else if (portResult.wasInUse && !portResult.killed) {
+          diagnostics.push(
+            createDiagnostic(
+              "error",
+              "port-conflict-unresolved",
+              `Port ${String(port)} is in use and could not be freed. Please stop the process manually.`,
+            ),
+          );
+          writeOutput({ intent, plan, diagnostics }, 1, options);
+          return;
+        }
+      }
+    }
+
     if (plan.repoExecutions.length > 0) {
       const deployResults = await executeDeployPlan(plan, runtimeContext, diagnostics, stateStore, options);
       verboseLog("output written", options);
       writeOutput(
-        { intent, plan, deploy: deployResults.payload, diagnostics },
+        { intent, plan, deploy: deployResults.payload, deploySummary: deployResults.deploySummary, diagnostics },
         hasErrors(diagnostics) ? 1 : deployResults.exitCode,
         options,
       );
@@ -687,7 +759,7 @@ async function main(): Promise<void> {
 
     verboseLog("output written", options);
     writeOutput(
-      { intent, plan, deploy: deployResults.payload, diagnostics },
+      { intent, plan, deploy: deployResults.payload, deploySummary: deployResults.deploySummary, diagnostics },
       exitCode,
       options,
     );
@@ -785,7 +857,7 @@ function parseJsonRequestArg(jsonString: string): { intent: CommandIntent | null
   }
 
   const kind = parsed["kind"] as CommandIntent["kind"];
-  const supportedKinds = new Set(["daemon", "run", "deploy", "offiline-web-ui"]);
+  const supportedKinds = new Set(["daemon", "run", "deploy", "offiline-web-ui", "apply"]);
   if (!supportedKinds.has(kind)) {
     return {
       intent: null,
@@ -900,6 +972,13 @@ void main().catch((error) => {
   process.exitCode = 1;
 });
 
+interface DeploySummaryEntry {
+  artifactName: string;
+  packageName: string;
+  lastVersion: string | null;
+  newVersion: string | null;
+}
+
 async function executeDeployPlan(
   plan: ResolvedPlan,
   runtimeContext: PluginRuntimeContext,
@@ -912,9 +991,11 @@ async function executeDeployPlan(
     repoExecutions: Array<Record<string, unknown>>;
     artifactExecutions: Array<Record<string, unknown>>;
   };
+  deploySummary: DeploySummaryEntry[];
 }> {
   const repoResults: Array<Record<string, unknown>> = [];
   const artifactResults: Array<Record<string, unknown>> = [];
+  const deploySummary: DeploySummaryEntry[] = [];
   let exitCode = 0;
 
   for (const repoExecution of plan.repoExecutions) {
@@ -925,12 +1006,19 @@ async function executeDeployPlan(
     repoResults.push({ name: repoExecution.name, status: repoExecution.status, result });
     if ((result.exitCode ?? 0) !== 0) {
       exitCode = result.exitCode as number;
-      return { exitCode, payload: { repoExecutions: repoResults, artifactExecutions: artifactResults } };
+      return { exitCode, payload: { repoExecutions: repoResults, artifactExecutions: artifactResults }, deploySummary };
     }
   }
 
   for (const artifactExecution of plan.artifactExecutions) {
     verboseLog(`deploy step start: ${artifactExecution.runnerName}`, options);
+    const existingRecord = await stateStore.getVersionRecord(
+      runtimeContext.repoRoot,
+      artifactExecution.artifactName,
+      artifactExecution.packageName,
+    );
+    const lastVersionBefore = existingRecord?.lastVersion ?? null;
+
     const hydrated = await hydrateArtifactExecution(
       artifactExecution,
       runtimeContext.repoRoot,
@@ -949,13 +1037,23 @@ async function executeDeployPlan(
     );
     verboseLog(`deploy step done: ${artifactExecution.runnerName} (exit ${String(result.exitCode)})`, options);
     artifactResults.push(result.payload);
+
+    if (result.exitCode === 0) {
+      deploySummary.push({
+        artifactName: artifactExecution.artifactName,
+        packageName: (result.payload["packageName"] as string) ?? artifactExecution.packageName ?? artifactExecution.artifactName,
+        lastVersion: lastVersionBefore,
+        newVersion: hydrated.resolvedVersion,
+      });
+    }
+
     if (result.exitCode !== 0) {
       exitCode = result.exitCode;
       break;
     }
   }
 
-  return { exitCode, payload: { repoExecutions: repoResults, artifactExecutions: artifactResults } };
+  return { exitCode, payload: { repoExecutions: repoResults, artifactExecutions: artifactResults }, deploySummary };
 }
 
 async function hydrateArtifactExecution(
