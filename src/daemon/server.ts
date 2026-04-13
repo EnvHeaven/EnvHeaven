@@ -474,6 +474,7 @@ export async function startDaemon(
           return;
         }
         const resolvedVersionsRoot = path.resolve(versionsRepoRoot);
+        stateStore.invalidateCache();
         const repoModel = await ensureRepoModel(resolvedVersionsRoot);
         const versions = await buildVersionPayload(repoModel, resolvedVersionsRoot, stateStore);
         sendJson(response, 200, { repoRoot: resolvedVersionsRoot, versions }, true);
@@ -884,7 +885,7 @@ export async function startDaemon(
           return;
         }
         killAllRuns();
-        sendJson(response, 200, { ok: true, message: "Daemon shutting down." });
+        sendJson(response, 200, { ok: true, message: "Service shutting down." });
         // Give the response time to flush before exiting
         setTimeout(() => process.exit(0), 150);
         return;

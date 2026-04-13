@@ -96,6 +96,10 @@ export class EnvHeavenStateStore {
     return firstRepoId ? state.repos[firstRepoId] ?? null : null;
   }
 
+  invalidateCache(): void {
+    this.cache = null;
+  }
+
   async getVersionRecords(repoRoot: string): Promise<ArtifactVersionRecord[]> {
     const repoRecord = await this.ensureRepo(repoRoot);
     return Object.values(repoRecord.artifacts).sort((left, right) => left.artifactName.localeCompare(right.artifactName));
@@ -368,19 +372,19 @@ export function incrementMinorVersion(version: string): string {
 export function incrementExpVersion(version: string): string {
   const exp = parseExpVersion(version);
   if (exp) {
-    return `${exp.major}.${exp.minor}.${exp.patch}.exp.${exp.exp + 1}`;
+    return `${exp.major}.${exp.minor}.${exp.patch}-exp.${exp.exp + 1}`;
   }
   const parsed = parseVersion(version);
   if (parsed) {
-    return `${parsed.major}.${parsed.minor}.${parsed.patch + 1}.exp.0`;
+    return `${parsed.major}.${parsed.minor}.${parsed.patch + 1}-exp.0`;
   }
-  return "0.1.1.exp.0";
+  return "0.1.1-exp.0";
 }
 
 export function parseExpVersion(
   value: string,
 ): { major: number; minor: number; patch: number; exp: number } | null {
-  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\.exp\.(0|[1-9]\d*)$/.exec(value.trim());
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)[.\-]exp\.(0|[1-9]\d*)$/.exec(value.trim());
   if (!match) {
     return null;
   }

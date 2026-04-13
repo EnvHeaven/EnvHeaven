@@ -58,6 +58,16 @@ const PACKAGE_VERSION: string = (() => {
 
 const BG_MODE = process.env["ENVHEAVEN_BG_MODE"] === "1";
 
+function promptConfirm(question: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer.trim().toLowerCase() === "y");
+    });
+  });
+}
+
 async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   const { options, remainingArgs } = parseGlobalFlags(rawArgs);
@@ -172,8 +182,8 @@ async function main(): Promise<void> {
                 "info",
                 alive ? "daemon-running" : "daemon-stopped",
                 alive
-                  ? `Daemon running on port ${String(lock!.daemonPort)}.`
-                  : "Daemon is not running.",
+                  ? `Service running on port ${String(lock!.daemonPort)}.`
+                  : "Service is not running.",
               ),
             ],
           },
@@ -184,18 +194,25 @@ async function main(): Promise<void> {
       }
 
       if (!alive) {
-        const msg = intent.subcommand === "restart" ? "Daemon is not running — starting fresh." : "Daemon is not running.";
+        const msg = intent.subcommand === "restart" ? "Service is not running — starting fresh." : "Service is not running.";
         if (intent.subcommand === "stop") {
           writeOutput({ diagnostics: [createDiagnostic("info", "daemon-already-stopped", msg)] }, 0, options);
           return;
         }
         // restart with no running daemon → fall through to start
       } else {
+        if (intent.subcommand === "stop" && !options.jsonRequest && process.stdin.isTTY) {
+          const confirmed = await promptConfirm("Service is running. Stop it? (y/N) ");
+          if (!confirmed) {
+            writeOutput({ diagnostics: [createDiagnostic("info", "daemon-stop-cancelled", "Stop cancelled.")] }, 0, options);
+            return;
+          }
+        }
         // Stop the daemon via its PID
         const stopped = await killProcess(lock!.daemonPid ?? null, lock!.daemonPort);
         if (!stopped) {
           writeOutput(
-            { diagnostics: [createDiagnostic("error", "daemon-stop-failed", "Daemon did not stop within 5 seconds.")] },
+            { diagnostics: [createDiagnostic("error", "daemon-stop-failed", "Service did not stop within 5 seconds.")] },
             1,
             options,
           );
@@ -204,7 +221,7 @@ async function main(): Promise<void> {
         await clearLockFile(paths);
         if (intent.subcommand === "stop") {
           writeOutput(
-            { diagnostics: [createDiagnostic("info", "daemon-stopped", "Daemon stopped.")] },
+            { diagnostics: [createDiagnostic("info", "daemon-stopped", "Service stopped.")] },
             0,
             options,
           );
@@ -220,14 +237,14 @@ async function main(): Promise<void> {
       const autoStart = await promptYesNo(
         "  EnvHeaven — first-run setup\n" +
           "  ─────────────────────────────────────────\n" +
-          "  Start the Offline UI automatically each time? (Y/n) ",
+          "  Start the Offline GUI automatically each time? (Y/n) ",
       );
       await savePreferences({ autoStartUi: autoStart });
       prefs = { autoStartUi: autoStart };
       process.stdout.write(
         autoStart
-          ? "  Saved: the offline UI will auto-start with the daemon.\n"
-          : "  Saved: offline UI will not auto-start (run `envheaven offiline-web-ui` anytime).\n",
+          ? "  Saved: the Offline GUI will auto-start with the service.\n"
+          : "  Saved: Offline GUI will not auto-start (run `envheaven offiline-web-ui` anytime).\n",
       );
     }
 
@@ -264,9 +281,9 @@ async function main(): Promise<void> {
             daemonUrls: buildUrlList(existingLock!.daemonPort, lanIp),
             uiUrls: uiLock?.uiPort ? buildUrlList(uiLock.uiPort, lanIp) : [],
             diagnostics: [
-              createDiagnostic("info", "daemon-already-running", `EnvHeaven daemon already running on port ${String(existingLock!.daemonPort)}.`),
+              createDiagnostic("info", "daemon-already-running", `EnvHeaven service already running on port ${String(existingLock!.daemonPort)}.`),
               ...(uiLock?.uiPort
-                ? [createDiagnostic("info", "offiline-web-ui-started", `EnvHeaven offline UI started on port ${String(uiLock.uiPort)}.`)]
+                ? [createDiagnostic("info", "offiline-web-ui-started", `EnvHeaven Offline GUI started on port ${String(uiLock.uiPort)}.`)]
                 : []),
             ],
           },
@@ -285,7 +302,7 @@ async function main(): Promise<void> {
           daemonUrls: buildUrlList(existingLock!.daemonPort, lanIp),
           uiUrls: existingLock!.uiPort ? buildUrlList(existingLock!.uiPort, lanIp) : [],
           diagnostics: [
-            createDiagnostic("info", "daemon-already-running", `EnvHeaven daemon already running on port ${String(existingLock!.daemonPort)}.`),
+            createDiagnostic("info", "daemon-already-running", `EnvHeaven service already running on port ${String(existingLock!.daemonPort)}.`),
           ],
         },
         0,
@@ -305,7 +322,7 @@ async function main(): Promise<void> {
     const lock = await waitForLockFile(paths, 18000, 300, requireUi);
     if (!lock) {
       writeOutput(
-        { diagnostics: [createDiagnostic("error", "daemon-start-timeout", "EnvHeaven daemon did not become reachable within 18 seconds.")] },
+        { diagnostics: [createDiagnostic("error", "daemon-start-timeout", "EnvHeaven service did not become reachable within 18 seconds.")] },
         1,
         options,
       );
@@ -320,10 +337,10 @@ async function main(): Promise<void> {
         daemonUrls: buildUrlList(lock.daemonPort, lanIp),
         uiUrls: lock.uiPort ? buildUrlList(lock.uiPort, lanIp) : [],
         diagnostics: [
-          createDiagnostic("info", "daemon-started", `EnvHeaven daemon started on port ${String(lock.daemonPort)}.`),
+          createDiagnostic("info", "daemon-started", `EnvHeaven service started on port ${String(lock.daemonPort)}.`),
           ...(lock.uiPort
-            ? [createDiagnostic("info", "offiline-web-ui-started", `EnvHeaven offline UI started on port ${String(lock.uiPort)}.`)]
-            : [createDiagnostic("info", "offiline-web-ui-hint", "Tip: run `envheaven offiline-web-ui` to launch the offline UI.")]),
+            ? [createDiagnostic("info", "offiline-web-ui-started", `EnvHeaven Offline GUI started on port ${String(lock.uiPort)}.`)]
+            : [createDiagnostic("info", "offiline-web-ui-hint", "Tip: run `envheaven offiline-web-ui` to launch the Offline GUI.")]),
         ],
       },
       0,
@@ -413,7 +430,7 @@ async function main(): Promise<void> {
           already_running: true,
           daemonUrls: buildUrlList(existingLock!.daemonPort, lanIp),
           uiUrls: buildUrlList(existingLock!.uiPort!, lanIp),
-          diagnostics: [createDiagnostic("info", "already-running", "EnvHeaven daemon and offline UI are already running.")],
+          diagnostics: [createDiagnostic("info", "already-running", "EnvHeaven service and Offline GUI are already running.")],
         },
         0,
         options,
@@ -437,7 +454,7 @@ async function main(): Promise<void> {
     const lock = await waitForLockFile(paths, 18000, 300, true);
     if (!lock) {
       writeOutput(
-        { diagnostics: [createDiagnostic("error", "offiline-web-ui-start-timeout", "EnvHeaven offline UI did not become reachable within 18 seconds.")] },
+        { diagnostics: [createDiagnostic("error", "offiline-web-ui-start-timeout", "EnvHeaven Offline GUI did not become reachable within 18 seconds.")] },
         1,
         options,
       );
@@ -452,9 +469,9 @@ async function main(): Promise<void> {
         uiUrls: lock.uiPort ? buildUrlList(lock.uiPort, lanIp) : [],
         diagnostics: [
           ...(daemonAliveUi
-            ? [createDiagnostic("info", "daemon-reused", `EnvHeaven daemon reused on port ${String(lock.daemonPort)}.`)]
-            : [createDiagnostic("info", "daemon-started", `EnvHeaven daemon started on port ${String(lock.daemonPort)}.`)]),
-          createDiagnostic("info", "offiline-web-ui-started", `EnvHeaven offline UI started on port ${String(lock.uiPort ?? 0)}.`),
+            ? [createDiagnostic("info", "daemon-reused", `EnvHeaven service reused on port ${String(lock.daemonPort)}.`)]
+            : [createDiagnostic("info", "daemon-started", `EnvHeaven service started on port ${String(lock.daemonPort)}.`)]),
+          createDiagnostic("info", "offiline-web-ui-started", `EnvHeaven Offline GUI started on port ${String(lock.uiPort ?? 0)}.`),
         ],
       },
       0,
@@ -481,8 +498,8 @@ async function main(): Promise<void> {
               "info",
               uiAlive ? "ui-running" : "ui-stopped",
               uiAlive
-                ? `Offline UI running on port ${String(lock!.uiPort)}.`
-                : "Offline UI is not running.",
+                ? `Offline GUI running on port ${String(lock!.uiPort)}.`
+                : "Offline GUI is not running.",
             ),
           ],
         },
@@ -495,7 +512,7 @@ async function main(): Promise<void> {
     if (intent.subcommand === "stop" || intent.subcommand === "restart") {
       if (!uiAlive) {
         if (intent.subcommand === "stop") {
-          writeOutput({ diagnostics: [createDiagnostic("info", "ui-already-stopped", "Offline UI is not running.")] }, 0, options);
+          writeOutput({ diagnostics: [createDiagnostic("info", "ui-already-stopped", "Offline GUI is not running.")] }, 0, options);
           return;
         }
         // restart with UI not running → fall through to start
@@ -503,7 +520,7 @@ async function main(): Promise<void> {
         const stopped = await killProcess(lock!.uiPid ?? null, lock!.uiPort!, 6000, lock!.daemonPort);
         if (!stopped) {
           writeOutput(
-            { diagnostics: [createDiagnostic("error", "ui-stop-failed", "Offline UI did not stop within 5 seconds.")] },
+            { diagnostics: [createDiagnostic("error", "ui-stop-failed", "Offline GUI did not stop within 5 seconds.")] },
             1,
             options,
           );
@@ -518,7 +535,7 @@ async function main(): Promise<void> {
           uiPid: undefined,
         });
         if (intent.subcommand === "stop") {
-          writeOutput({ diagnostics: [createDiagnostic("info", "ui-stopped", "Offline UI stopped.")] }, 0, options);
+          writeOutput({ diagnostics: [createDiagnostic("info", "ui-stopped", "Offline GUI stopped.")] }, 0, options);
           return;
         }
         // restart: fall through to start below
@@ -539,7 +556,7 @@ async function main(): Promise<void> {
           already_running: true,
           daemonUrls: buildUrlList(existingLock2!.daemonPort, lanIp),
           uiUrls: buildUrlList(existingLock2!.uiPort!, lanIp),
-          diagnostics: [createDiagnostic("info", "already-running", "EnvHeaven daemon and offline UI are already running.")],
+          diagnostics: [createDiagnostic("info", "already-running", "EnvHeaven service and Offline GUI are already running.")],
         },
         0,
         options,
@@ -562,7 +579,7 @@ async function main(): Promise<void> {
     const uiLock = await waitForLockFile(paths, 18000, 300, true);
     if (!uiLock) {
       writeOutput(
-        { diagnostics: [createDiagnostic("error", "ui-start-timeout", "Offline UI did not become reachable within 18 seconds.")] },
+        { diagnostics: [createDiagnostic("error", "ui-start-timeout", "Offline GUI did not become reachable within 18 seconds.")] },
         1,
         options,
       );
@@ -575,7 +592,7 @@ async function main(): Promise<void> {
         mode: "ui",
         daemonUrls: buildUrlList(uiLock.daemonPort, lanIp),
         uiUrls: uiLock.uiPort ? buildUrlList(uiLock.uiPort, lanIp) : [],
-        diagnostics: [createDiagnostic("info", "ui-started", `Offline UI started on port ${String(uiLock.uiPort ?? 0)}.`)],
+        diagnostics: [createDiagnostic("info", "ui-started", `Offline GUI started on port ${String(uiLock.uiPort ?? 0)}.`)],
       },
       0,
       options,
@@ -674,9 +691,13 @@ async function main(): Promise<void> {
       plan.pluginPackage = plan.execution?.pluginPackage;
     }
 
-    const runExec = plan.execution;
-    if (runExec && !runExec.pluginPackage) {
-      const port = extractPortFromExecution(runExec.args, runExec.env);
+    const runnableArtifacts = plan.artifactExecutions.filter(
+      (a) => a.status === "runnable" && a.execution,
+    );
+
+    for (const entry of runnableArtifacts) {
+      const exec = entry.execution!;
+      const port = extractPortFromExecution(exec.args, exec.env);
       if (port) {
         const portResult = await killPortHolder(port);
         if (portResult.wasInUse && portResult.killed) {
@@ -709,6 +730,52 @@ async function main(): Promise<void> {
         hasErrors(diagnostics) ? 1 : deployResults.exitCode,
         options,
       );
+      return;
+    }
+
+    if (runnableArtifacts.length > 1 && !hasErrors(diagnostics)) {
+      for (const entry of runnableArtifacts) {
+        const exec = entry.execution!;
+        const port = extractPortFromExecution(exec.args, exec.env);
+        const artifactMeta = repoModel.artifacts[entry.artifactName] as Record<string, unknown> | undefined;
+        const publicName = (artifactMeta?.PublicName ?? artifactMeta?.publicName ?? entry.artifactName) as string;
+        const url = port ? `http://localhost:${String(port)}/` : null;
+        process.stdout.write(`  [starting] ${publicName}${url ? ` — ${url}` : ""}\n`);
+      }
+
+      const pluginCache = new Map<string, Awaited<ReturnType<typeof loadPlugin>>>();
+      const promises = runnableArtifacts.map(async (entry) => {
+        const exec = entry.execution!;
+        const pkg = exec.pluginPackage;
+        if (!pkg) {
+          const spawnResult = await spawnExecution({
+            command: exec.command!,
+            args: exec.args,
+            env: exec.env,
+            cwd: exec.cwd,
+          });
+          return spawnResult.exitCode;
+        }
+        let loaded = pluginCache.get(pkg);
+        if (!loaded) {
+          loaded = await loadPlugin(pkg, repoRoot);
+          pluginCache.set(pkg, loaded);
+        }
+        if (loaded.plugin.execute) {
+          const singlePlan: ResolvedPlan = {
+            ...plan,
+            execution: exec,
+            pluginPackage: pkg,
+          };
+          const result = await loaded.plugin.execute(singlePlan, runtimeContext);
+          return result.exitCode ?? 1;
+        }
+        return 1;
+      });
+
+      const results = await Promise.all(promises);
+      const exitCode = results.some((c) => c !== 0) ? 1 : 0;
+      writeOutput({ intent, plan, diagnostics }, exitCode, options);
       return;
     }
   }
@@ -850,22 +917,24 @@ function parseJsonRequestArg(jsonString: string): { intent: CommandIntent | null
         createDiagnostic(
           "error",
           "json-request-missing-kind",
-          '--json-request JSON must contain a "kind" field (e.g. "run", "deploy", "daemon").',
+          '--json-request JSON must contain a "kind" field (e.g. "run", "deploy", "service").',
         ),
       ],
     };
   }
 
   const kind = parsed["kind"] as CommandIntent["kind"];
+  const kindAlias: Record<string, string> = { service: "daemon" };
+  const resolvedKind = kindAlias[kind] ?? kind;
   const supportedKinds = new Set(["daemon", "run", "deploy", "offiline-web-ui", "apply"]);
-  if (!supportedKinds.has(kind)) {
+  if (!supportedKinds.has(resolvedKind)) {
     return {
       intent: null,
       diagnostics: [
         createDiagnostic(
           "error",
           "json-request-invalid-kind",
-          `--json-request "kind" must be one of: daemon, run, deploy, offiline-web-ui. Got: "${kind}".`,
+          `--json-request "kind" must be one of: service, run, deploy, offiline-web-ui. Got: "${kind}".`,
         ),
       ],
     };
@@ -876,10 +945,10 @@ function parseJsonRequestArg(jsonString: string): { intent: CommandIntent | null
 
   return {
     intent: {
-      kind,
+      kind: resolvedKind as CommandIntent["kind"],
       target,
       rawArgs: [jsonString],
-      normalizedTokens: [kind, ...(target ? [target] : [])],
+      normalizedTokens: [resolvedKind, ...(target ? [target] : [])],
       artifactSelectors: selectors,
     },
     diagnostics: [],

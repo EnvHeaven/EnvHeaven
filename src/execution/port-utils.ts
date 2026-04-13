@@ -108,10 +108,11 @@ export function extractPortFromExecution(
     }
   }
 
-  const portEnvValue = env["PORT"] ?? env["port"];
-  if (portEnvValue) {
-    const parsed = parseInt(portEnvValue, 10);
-    if (parsed > 0) return parsed;
+  for (const [key, value] of Object.entries(env)) {
+    if (/^(.*_)?PORT$/i.test(key) && value) {
+      const parsed = parseInt(value, 10);
+      if (parsed > 0) return parsed;
+    }
   }
 
   return null;

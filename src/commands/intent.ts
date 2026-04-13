@@ -31,7 +31,7 @@ const SPECIAL_COMMAND_KEYWORDS = new Set([
   "version",
 ]);
 
-const NOUN_COMMANDS = new Set(["daemon", "ui", "apply"]);
+const NOUN_COMMANDS = new Set(["daemon", "service", "ui", "apply"]);
 const NOUN_SUBCOMMANDS = new Set(["stop", "restart", "status"]);
 const APPLY_SUBCOMMANDS = new Set(["version"]);
 
@@ -139,8 +139,8 @@ export function inferCommandIntent(args: string[]): {
       };
     }
 
-    // Handle: daemon [stop|restart|status]
-    if (normalizedTokens.length >= 1 && normalizedTokens[0] === "daemon") {
+    // Handle: daemon|service [stop|restart|status]
+    if (normalizedTokens.length >= 1 && (normalizedTokens[0] === "daemon" || normalizedTokens[0] === "service")) {
       if (normalizedTokens.length === 1) {
         return {
           intent: { kind: "daemon", rawArgs: args, normalizedTokens },
@@ -161,7 +161,7 @@ export function inferCommandIntent(args: string[]): {
       return {
         intent: null,
         diagnostics: [
-          createDiagnostic("error", "unsupported-command-shape", `Unsupported daemon subcommand: "${normalizedTokens.slice(1).join(" ")}". Valid: stop, restart, status.`),
+          createDiagnostic("error", "unsupported-command-shape", `Unsupported service subcommand: "${normalizedTokens.slice(1).join(" ")}". Valid: stop, restart, status.`),
         ],
       };
     }
