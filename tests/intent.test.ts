@@ -27,6 +27,9 @@ const acceptedCases = [
   { args: ["deploy", "local", "envheaven"], kind: "deploy", target: "local-01" },
   { args: ["run", "local", "web-app-cdn-01"], kind: "run", target: "local" },
   { args: ["run", "web-app-cdn-01", "local"], kind: "run", target: "local" },
+  { args: ["run", "development"], kind: "run", target: "development" },
+  { args: ["run", "development-01"], kind: "run", target: "development-01" },
+  { args: ["run", "development", "web-app-front-end-01"], kind: "run", target: "development" },
 ];
 
 for (const acceptedCase of acceptedCases) {
@@ -58,7 +61,6 @@ const rejectedCases = [
   ["run", "deploy"],
   ["run", "deploy", "local"],
   ["last"],
-  ["development"],
 ];
 
 for (const rejectedCase of rejectedCases) {

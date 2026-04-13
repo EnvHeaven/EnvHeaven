@@ -5,6 +5,8 @@ const RUN_TARGET_KEYWORDS = new Set([
   "default",
   "local",
   "local-01",
+  "development",
+  "development-01",
   "fake",
   "fake-local",
   "fake-local-01",
@@ -255,6 +257,8 @@ function parseSupportedRunTarget(tokens: string[]): { target: SupportedTarget; a
       case "default":
       case "local":
       case "local-01":
+      case "development":
+      case "development-01":
       case "fake-local":
       case "fake-local-01":
       case "install-revert":
