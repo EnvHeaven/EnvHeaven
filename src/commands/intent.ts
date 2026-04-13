@@ -71,6 +71,18 @@ export function inferCommandIntent(args: string[]): {
   const versionCount = normalizedTokens.filter((token) => token === "version").length;
   const offilineCount = normalizedTokens.filter((token) => token !== "version" && SPECIAL_COMMAND_KEYWORDS.has(token)).length;
 
+  if (normalizedTokens.length >= 2 && normalizedTokens[0] === "apply" && APPLY_SUBCOMMANDS.has(normalizedTokens[1])) {
+    return {
+      intent: {
+        kind: "apply",
+        subcommand: normalizedTokens[1] as "version",
+        rawArgs: args,
+        normalizedTokens,
+      },
+      diagnostics: [],
+    };
+  }
+
   if (versionCount >= 1) {
     return {
       intent: {
@@ -154,26 +166,7 @@ export function inferCommandIntent(args: string[]): {
       };
     }
 
-    // Handle: apply version
-    if (normalizedTokens.length >= 1 && normalizedTokens[0] === "apply") {
-      if (normalizedTokens.length === 2 && APPLY_SUBCOMMANDS.has(normalizedTokens[1])) {
-        return {
-          intent: {
-            kind: "apply",
-            subcommand: normalizedTokens[1] as "version",
-            rawArgs: args,
-            normalizedTokens,
-          },
-          diagnostics: [],
-        };
-      }
-      return {
-        intent: null,
-        diagnostics: [
-          createDiagnostic("error", "unsupported-command-shape", `Unsupported apply subcommand: "${normalizedTokens.slice(1).join(" ")}". Valid: version.`),
-        ],
-      };
-    }
+
 
     // Handle: ui [stop|restart|status]
     if (normalizedTokens.length >= 1 && normalizedTokens[0] === "ui") {
