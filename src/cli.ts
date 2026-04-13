@@ -21,7 +21,12 @@ import { createDiagnostic, hasErrors } from "./diagnostics";
 import { discoverEnvRepo } from "./envrepo/discovery";
 import { buildRepoModel } from "./envrepo/model";
 import { resolvePlan } from "./envrepo/resolver";
+import { resolveWorkspaceRoot } from "./envrepo/workspace-routing";
 import { spawnExecution } from "./execution/spawn";
+import {
+  buildChallengeFromResolvedModel,
+  executeCliChallenge,
+} from "./guards/challenge";
 import { launchOffilineWebUi } from "./offiline/launcher";
 import { loadPlugin } from "./plugins/loader";
 import { EnvHeavenStateStore } from "./state/store";
@@ -106,7 +111,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  const repoRoot = process.cwd();
+  const workspaceResult = await resolveWorkspaceRoot(process.cwd());
+  const repoRoot = workspaceResult.envRepoRoot;
   const stateStore = new EnvHeavenStateStore();
   const paths = stateStore.getPaths();
   await stateStore.rememberRepo(repoRoot);
@@ -636,6 +642,33 @@ async function main(): Promise<void> {
   }
 
   if (intent.kind === "deploy") {
+    const challengeRequirement = buildChallengeFromResolvedModel(
+      plan.resolvedModel,
+      plan.resolvedTarget,
+    );
+
+    if (challengeRequirement) {
+      if (options.jsonResponse) {
+        diagnostics.push(
+          createDiagnostic(
+            "error",
+            "challenge-required-non-interactive",
+            `Deploy to "${plan.resolvedTarget}" requires interactive confirmation (challenge: "${challengeRequirement.phrase}"). ` +
+              `Cannot proceed in JSON/non-interactive mode.`,
+          ),
+        );
+        writeOutput({ intent, plan, diagnostics }, 1, options);
+        return;
+      }
+
+      const challengeResult = await executeCliChallenge(challengeRequirement);
+      diagnostics.push(...challengeResult.diagnostics);
+      if (!challengeResult.passed) {
+        writeOutput({ intent, plan, diagnostics }, 1, options);
+        return;
+      }
+    }
+
     const selection = resolveArtifactSelection(plan.artifactExecutions, intent.artifactSelectors ?? []);
     diagnostics.push(...selection.diagnostics);
     if (!hasErrors(diagnostics)) {

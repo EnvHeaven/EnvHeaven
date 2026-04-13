@@ -2,6 +2,7 @@ import path from "node:path";
 import { createDiagnostic, hasErrors } from "../diagnostics";
 import type {
   ArtifactExecutionPlan,
+  DeployGuardConfig,
   Diagnostic,
   ExecutionSpec,
   MergeTraceEntry,
@@ -81,6 +82,8 @@ export function resolvePlan(
     );
   }
 
+  const deployGuard = extractDeployGuardConfig(resolvedModel);
+
   return {
     kind,
     requestedTarget: target,
@@ -95,6 +98,7 @@ export function resolvePlan(
     execution,
     pluginPackage,
     resolvedModel,
+    deployGuard,
   };
 }
 
@@ -912,4 +916,32 @@ function deepClone<T>(value: T): T {
 function findLayerSource(repoModel: RepoModel, layerName: string): string {
   const directLayer = [...repoModel.layers].reverse().find((layer) => layerName in layer.envMapLayers);
   return directLayer?.sourcePath ?? repoModel.rootDirectory;
+}
+
+function extractDeployGuardConfig(
+  resolvedModel: Record<string, unknown>,
+): DeployGuardConfig | undefined {
+  const guard = resolvedModel["DeployGuard"] ?? resolvedModel["deployGuard"];
+
+  if (guard === true) {
+    return { requireChallenge: true };
+  }
+
+  if (isRecord(guard)) {
+    const requireChallenge =
+      typeof guard["requireChallenge"] === "boolean"
+        ? guard["requireChallenge"]
+        : typeof guard["RequireChallenge"] === "boolean"
+          ? guard["RequireChallenge"]
+          : false;
+    const reason =
+      typeof guard["reason"] === "string"
+        ? guard["reason"]
+        : typeof guard["Reason"] === "string"
+          ? (guard["Reason"] as string)
+          : undefined;
+    return { requireChallenge, reason };
+  }
+
+  return undefined;
 }

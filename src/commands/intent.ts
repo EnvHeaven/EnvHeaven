@@ -12,7 +12,7 @@ const RUN_TARGET_KEYWORDS = new Set([
   "install-revert-01",
 ]);
 
-const DEPLOY_TARGET_KEYWORDS = new Set([
+const DEPLOY_TARGET_KEYWORDS = new Set<string>([
   "local",
   "local-01",
   "development",

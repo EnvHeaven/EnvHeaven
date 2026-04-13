@@ -32,6 +32,7 @@ export type SupportedTarget =
   | "development-01"
   | "beta"
   | "beta-01"
+  | "production"
   | "production-01"
   | "fake-local"
   | "fake-local-01"
@@ -89,6 +90,11 @@ export interface RepoExecutionPlan {
   execution: ExecutionSpec | null;
 }
 
+export interface DeployGuardConfig {
+  requireChallenge: boolean;
+  reason?: string;
+}
+
 export interface ResolvedPlan {
   kind: "run" | "deploy";
   requestedTarget: SupportedTarget;
@@ -103,6 +109,7 @@ export interface ResolvedPlan {
   execution: ExecutionSpec | null;
   pluginPackage?: string;
   resolvedModel: Record<string, unknown>;
+  deployGuard?: DeployGuardConfig;
 }
 
 export interface PluginInspectResult {
