@@ -47,6 +47,7 @@ interface ActionRun {
 }
 
 const MAX_PTY_REPLAY_BYTES = 2 * 1024 * 1024;
+const MAX_COMPLETED_RUNS = 50;
 
 interface PtyRun {
   runId: string;
@@ -85,6 +86,27 @@ export async function startDaemon(
 
   // In-memory action runs registry
   const actionRuns = new Map<string, ActionRun>();
+
+  function pruneCompletedRuns(): void {
+    const completedPipe = Array.from(actionRuns.values()).filter((r) => r.status !== "running");
+    if (completedPipe.length > MAX_COMPLETED_RUNS) {
+      completedPipe
+        .sort((a, b) => a.startedAt.localeCompare(b.startedAt))
+        .slice(0, completedPipe.length - MAX_COMPLETED_RUNS)
+        .forEach((r) => actionRuns.delete(r.runId));
+    }
+    const completedPty = Array.from(ptyRuns.values()).filter((r) => r.status !== "running");
+    if (completedPty.length > MAX_COMPLETED_RUNS) {
+      completedPty
+        .sort((a, b) => a.startedAt.localeCompare(b.startedAt))
+        .slice(0, completedPty.length - MAX_COMPLETED_RUNS)
+        .forEach((r) => {
+          r.replayBuffer.length = 0;
+          r.replayBytes = 0;
+          ptyRuns.delete(r.runId);
+        });
+    }
+  }
 
   function killAllRuns(): void {
     for (const run of actionRuns.values()) {
@@ -202,6 +224,7 @@ export async function startDaemon(
       run.helpers = run.status === "success" ? action.successHelpers : action.failHelpers;
       run.process = null;
       sendSseResult(run);
+      pruneCompletedRuns();
       broadcastEvent({ type: "action:complete", payload: { runId, actionId, exitCode: run.exitCode, status: run.status } });
     });
 
@@ -251,10 +274,14 @@ export async function startDaemon(
 
     ptyProcess.onData((data: string) => {
       run.replayBuffer.push(data);
-      run.replayBytes += data.length;
+      run.replayBytes += Buffer.byteLength(data, "utf8");
       while (run.replayBytes > MAX_PTY_REPLAY_BYTES && run.replayBuffer.length > 1) {
         const removed = run.replayBuffer.shift()!;
-        run.replayBytes -= removed.length;
+        run.replayBytes -= Buffer.byteLength(removed, "utf8");
+      }
+      if (run.replayBytes > MAX_PTY_REPLAY_BYTES && run.replayBuffer.length === 1) {
+        run.replayBuffer[0] = run.replayBuffer[0].slice(-MAX_PTY_REPLAY_BYTES);
+        run.replayBytes = Buffer.byteLength(run.replayBuffer[0], "utf8");
       }
       const msg = JSON.stringify({ type: "output", data });
       for (const ws of run.wsClients) {
@@ -272,9 +299,14 @@ export async function startDaemon(
       const msg = JSON.stringify({ type: "exit", exitCode, status: run.status, helpers: run.helpers });
       for (const ws of run.wsClients) {
         if (ws.readyState === WebSocket.OPEN) {
-          try { ws.send(msg); } catch { /* ignore */ }
+          try {
+            ws.send(msg);
+            ws.close(1000, "process exited");
+          } catch { /* ignore */ }
         }
       }
+      run.wsClients.clear();
+      pruneCompletedRuns();
       broadcastEvent({ type: "action:complete", payload: { runId, actionId, exitCode, status: run.status } });
     });
 
@@ -924,6 +956,13 @@ export async function startDaemon(
   server.on("upgrade", (request, socket, head) => {
     const urlPath = request.url ?? "/";
     if (urlPath === "/ws" || urlPath.startsWith("/ws?")) {
+      const wsOrigin = request.headers.origin;
+      const wsAllowed = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+      if (wsOrigin && !wsAllowed.test(wsOrigin)) {
+        socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+        socket.destroy();
+        return;
+      }
       wss.handleUpgrade(request, socket, head, (ws) => {
         wss.emit("connection", ws, request);
       });
