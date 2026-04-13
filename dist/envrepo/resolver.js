@@ -406,6 +406,12 @@ function materializeArtifactDistributors(repoModel, resolvedModel, resolvedTarge
             };
         }
         const execution = materializeExecutionRecord(distributorName, artifactName, executionRecord, distributorValue, repoModel.rootDirectory, buildTemplateContext(finalArtifact, resolvedTarget, repoModel.rootDirectory), false, blockedByPlanErrors, artifactDiagnostics, trace);
+        if (execution) {
+            const layerEnvVars = normalizeStringMap(finalArtifact.EnvVars ?? finalArtifact.envVars);
+            if (Object.keys(layerEnvVars).length > 0) {
+                execution.env = { ...layerEnvVars, ...execution.env };
+            }
+        }
         const status = execution ? "runnable" : "partial";
         return {
             artifactName,

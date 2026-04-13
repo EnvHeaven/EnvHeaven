@@ -617,6 +617,13 @@ function materializeArtifactDistributors(
       trace,
     );
 
+    if (execution) {
+      const layerEnvVars = normalizeStringMap(finalArtifact.EnvVars ?? finalArtifact.envVars);
+      if (Object.keys(layerEnvVars).length > 0) {
+        execution.env = { ...layerEnvVars, ...execution.env };
+      }
+    }
+
     const status: ArtifactExecutionPlan["status"] = execution ? "runnable" : "partial";
 
       return {
