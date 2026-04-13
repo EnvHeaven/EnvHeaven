@@ -4,6 +4,7 @@ import http from "node:http";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
+import * as pty from "node-pty";
 import { buildRepoModel } from "../envrepo/model";
 import { discoverEnvRepo } from "../envrepo/discovery";
 import { resolvePlan } from "../envrepo/resolver";
@@ -45,6 +46,22 @@ interface ActionRun {
   process: ReturnType<typeof spawn> | null;
 }
 
+const MAX_PTY_REPLAY_BYTES = 2 * 1024 * 1024;
+
+interface PtyRun {
+  runId: string;
+  actionId: string;
+  repoRoot: string;
+  startedAt: string;
+  status: "running" | "success" | "error" | "stopped";
+  exitCode: number | null;
+  helpers: ActionDefinition["successHelpers"];
+  ptyProcess: pty.IPty | null;
+  wsClients: Set<WebSocket>;
+  replayBuffer: string[];
+  replayBytes: number;
+}
+
 function readOwnPackageVersion(): string {
   try {
     const pkgPath = path.join(__dirname, "..", "package.json");
@@ -73,6 +90,12 @@ export async function startDaemon(
     for (const run of actionRuns.values()) {
       if (run.status === "running" && run.process) {
         try { run.process.kill("SIGTERM"); } catch { /* ignore */ }
+        run.status = "stopped";
+      }
+    }
+    for (const run of ptyRuns.values()) {
+      if (run.status === "running" && run.ptyProcess) {
+        try { run.ptyProcess.kill(); } catch { /* ignore */ }
         run.status = "stopped";
       }
     }
@@ -192,6 +215,70 @@ export async function startDaemon(
     });
 
     broadcastEvent({ type: "action:started", payload: { runId, actionId } });
+    return run;
+  }
+
+  const ptyRuns = new Map<string, PtyRun>();
+
+  function dispatchPtyAction(actionId: string, action: ActionDefinition, repoRoot: string): PtyRun {
+    const runId = randomUUID();
+    if (!action.runCommand.trim()) throw new Error(`Action "${actionId}" has an empty runCommand.`);
+
+    const shell = process.env.SHELL ?? "sh";
+    const ptyProcess = pty.spawn(shell, ["-lc", action.runCommand], {
+      name: "xterm-256color",
+      cols: 120,
+      rows: 30,
+      cwd: repoRoot,
+      env: { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor" } as Record<string, string>,
+      handleFlowControl: true,
+    });
+
+    const run: PtyRun = {
+      runId,
+      actionId,
+      repoRoot,
+      startedAt: new Date().toISOString(),
+      status: "running",
+      exitCode: null,
+      helpers: [],
+      ptyProcess,
+      wsClients: new Set(),
+      replayBuffer: [],
+      replayBytes: 0,
+    };
+    ptyRuns.set(runId, run);
+
+    ptyProcess.onData((data: string) => {
+      run.replayBuffer.push(data);
+      run.replayBytes += data.length;
+      while (run.replayBytes > MAX_PTY_REPLAY_BYTES && run.replayBuffer.length > 1) {
+        const removed = run.replayBuffer.shift()!;
+        run.replayBytes -= removed.length;
+      }
+      const msg = JSON.stringify({ type: "output", data });
+      for (const ws of run.wsClients) {
+        if (ws.readyState === WebSocket.OPEN) {
+          try { ws.send(msg); } catch { run.wsClients.delete(ws); }
+        }
+      }
+    });
+
+    ptyProcess.onExit(({ exitCode }) => {
+      run.exitCode = exitCode;
+      run.status = exitCode === 0 ? "success" : "error";
+      run.helpers = run.status === "success" ? action.successHelpers : action.failHelpers;
+      run.ptyProcess = null;
+      const msg = JSON.stringify({ type: "exit", exitCode, status: run.status, helpers: run.helpers });
+      for (const ws of run.wsClients) {
+        if (ws.readyState === WebSocket.OPEN) {
+          try { ws.send(msg); } catch { /* ignore */ }
+        }
+      }
+      broadcastEvent({ type: "action:complete", payload: { runId, actionId, exitCode, status: run.status } });
+    });
+
+    broadcastEvent({ type: "action:started", payload: { runId, actionId, terminalMode: "pty" } });
     return run;
   }
 
@@ -513,8 +600,14 @@ export async function startDaemon(
           return;
         }
 
-        const run = dispatchAction(actionId, action, repoRoot);
-        sendJson(response, 200, { ok: true, runId: run.runId, actionId, status: "running" });
+        const terminalMode = action.terminalMode ?? "pty";
+        if (terminalMode === "pty") {
+          const ptyRun = dispatchPtyAction(actionId, action, repoRoot);
+          sendJson(response, 200, { ok: true, runId: ptyRun.runId, actionId, status: "running", terminalMode: "pty" });
+        } else {
+          const run = dispatchAction(actionId, action, repoRoot);
+          sendJson(response, 200, { ok: true, runId: run.runId, actionId, status: "running", terminalMode: "pipe" });
+        }
         return;
       }
 
@@ -599,6 +692,7 @@ export async function startDaemon(
           pageHeaderOptions: normalizePageHeaderOptions(payload.pageHeaderOptions),
           isLocalUser: payload.isLocalUser === true,
           buttonColor: typeof payload.buttonColor === "string" ? payload.buttonColor : undefined,
+          terminalMode: payload.terminalMode === "pipe" ? "pipe" : payload.terminalMode === "pty" ? "pty" : undefined,
         };
 
         await saveAction(configRepoRoot, action);
@@ -609,15 +703,25 @@ export async function startDaemon(
 
       // ─── GET /api/actions/runs ───────────────────────────────────────────
       if (url.pathname === "/api/actions/runs" && request.method === "GET") {
-        const runs = Array.from(actionRuns.values()).map((run) => ({
+        const pipeRuns = Array.from(actionRuns.values()).map((run) => ({
           runId: run.runId,
           actionId: run.actionId,
           status: run.status,
           exitCode: run.exitCode,
           startedAt: run.startedAt,
           lineCount: run.lines.length,
+          terminalMode: "pipe" as const,
         }));
-        sendJson(response, 200, { runs }, true);
+        const termRuns = Array.from(ptyRuns.values()).map((run) => ({
+          runId: run.runId,
+          actionId: run.actionId,
+          status: run.status,
+          exitCode: run.exitCode,
+          startedAt: run.startedAt,
+          lineCount: run.replayBuffer.length,
+          terminalMode: "pty" as const,
+        }));
+        sendJson(response, 200, { runs: [...pipeRuns, ...termRuns] }, true);
         return;
       }
 
@@ -629,17 +733,26 @@ export async function startDaemon(
         }
         const runId = url.pathname.replace("/api/actions/stop/", "").replace(/^\/+|\/+$/g, "");
         const run = actionRuns.get(runId);
-        if (!run) {
+        const ptyRun = ptyRuns.get(runId);
+
+        if (!run && !ptyRun) {
           sendJson(response, 404, { error: `Run "${runId}" not found.` });
           return;
         }
 
-        if (run.process && run.status === "running") {
-          run.process.kill("SIGTERM");
-          run.status = "stopped";
+        if (run) {
+          if (run.process && run.status === "running") {
+            run.process.kill("SIGTERM");
+            run.status = "stopped";
+          }
+          sendJson(response, 200, { ok: true, runId, status: run.status });
+        } else if (ptyRun) {
+          if (ptyRun.ptyProcess && ptyRun.status === "running") {
+            ptyRun.ptyProcess.kill();
+            ptyRun.status = "stopped";
+          }
+          sendJson(response, 200, { ok: true, runId, status: ptyRun.status });
         }
-
-        sendJson(response, 200, { ok: true, runId, status: run.status });
         return;
       }
 
@@ -709,7 +822,7 @@ export async function startDaemon(
 
       // ─── GET /api/actions/runs/logs ─────────────────────────────────────
       if (url.pathname === "/api/actions/runs/logs" && request.method === "GET") {
-        const runsWithLogs = Array.from(actionRuns.values()).map((run) => ({
+        const pipeRunsWithLogs = Array.from(actionRuns.values()).map((run) => ({
           runId: run.runId,
           actionId: run.actionId,
           status: run.status,
@@ -717,8 +830,19 @@ export async function startDaemon(
           startedAt: run.startedAt,
           helpers: run.helpers,
           lines: run.lines.map((l) => ({ stream: l.stream, data: l.data, ts: l.ts })),
+          terminalMode: "pipe" as const,
         }));
-        sendJson(response, 200, { runs: runsWithLogs }, true);
+        const ptyRunsWithLogs = Array.from(ptyRuns.values()).map((run) => ({
+          runId: run.runId,
+          actionId: run.actionId,
+          status: run.status,
+          exitCode: run.exitCode,
+          startedAt: run.startedAt,
+          helpers: run.helpers,
+          lines: [],
+          terminalMode: "pty" as const,
+        }));
+        sendJson(response, 200, { runs: [...pipeRunsWithLogs, ...ptyRunsWithLogs] }, true);
         return;
       }
 
@@ -743,6 +867,7 @@ export async function startDaemon(
   });
 
   const wss = new WebSocketServer({ noServer: true });
+  const terminalWss = new WebSocketServer({ noServer: true });
 
   wss.on("connection", (ws) => {
     wsClients.add(ws);
@@ -755,11 +880,63 @@ export async function startDaemon(
     ws.send(JSON.stringify({ type: "connected", payload: { clients: wsClients.size } }));
   });
 
+  terminalWss.on("connection", (ws, request) => {
+    const reqUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+    const runId = reqUrl.pathname.replace("/api/actions/terminal/", "").replace(/^\/+|\/+$/g, "");
+    const run = ptyRuns.get(runId);
+
+    if (!run) {
+      ws.send(JSON.stringify({ type: "error", message: `Run "${runId}" not found.` }));
+      ws.close();
+      return;
+    }
+
+    run.wsClients.add(ws);
+
+    for (const chunk of run.replayBuffer) {
+      ws.send(JSON.stringify({ type: "output", data: chunk }));
+    }
+
+    if (run.status !== "running") {
+      ws.send(JSON.stringify({ type: "exit", exitCode: run.exitCode, status: run.status, helpers: run.helpers }));
+    }
+
+    ws.on("message", (raw) => {
+      try {
+        const msg = JSON.parse(String(raw)) as { type: string; data?: string; cols?: number; rows?: number };
+        if (msg.type === "stdin" && typeof msg.data === "string" && run.ptyProcess) {
+          run.ptyProcess.write(msg.data);
+        }
+        if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number" && run.ptyProcess) {
+          run.ptyProcess.resize(msg.cols, msg.rows);
+        }
+      } catch { /* ignore */ }
+    });
+
+    ws.on("close", () => {
+      run.wsClients.delete(ws);
+    });
+    ws.on("error", () => {
+      run.wsClients.delete(ws);
+    });
+  });
+
   server.on("upgrade", (request, socket, head) => {
     const urlPath = request.url ?? "/";
     if (urlPath === "/ws" || urlPath.startsWith("/ws?")) {
       wss.handleUpgrade(request, socket, head, (ws) => {
         wss.emit("connection", ws, request);
+      });
+    } else if (urlPath.startsWith("/api/actions/terminal/")) {
+      const origin = request.headers.origin;
+      const allowedOrigins = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+      if (origin && !allowedOrigins.test(origin)) {
+        socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      terminalWss.handleUpgrade(request, socket, head, (ws) => {
+        terminalWss.emit("connection", ws, request);
       });
     } else {
       socket.destroy();

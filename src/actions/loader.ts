@@ -27,6 +27,7 @@ export interface ActionDefinition {
   pageHeaderOptions?: PageHeaderOptions;
   isLocalUser?: boolean;
   buttonColor?: string;
+  terminalMode?: "pty" | "pipe";
 }
 
 const ENV_DIR = ".envheaven";
