@@ -448,6 +448,13 @@ function materializeArtifactExecutions(
       materializationTrace,
     );
 
+    if (materializedExecution) {
+      const layerEnvVars = normalizeStringMap(finalArtifact.EnvVars ?? finalArtifact.envVars);
+      if (Object.keys(layerEnvVars).length > 0) {
+        materializedExecution.env = { ...layerEnvVars, ...materializedExecution.env };
+      }
+    }
+
     artifactExecutions.push({
       artifactName,
       runnerName,
