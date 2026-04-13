@@ -643,8 +643,18 @@ export async function startDaemon(
 
         const terminalMode = action.terminalMode ?? "pty";
         if (terminalMode === "pty") {
-          const ptyRun = await dispatchPtyAction(actionId, action, repoRoot);
-          sendJson(response, 200, { ok: true, runId: ptyRun.runId, actionId, status: "running", terminalMode: "pty" });
+          try {
+            const ptyRun = await dispatchPtyAction(actionId, action, repoRoot);
+            sendJson(response, 200, { ok: true, runId: ptyRun.runId, actionId, status: "running", terminalMode: "pty" });
+          } catch (ptyErr) {
+            const msg = ptyErr instanceof Error ? ptyErr.message : String(ptyErr);
+            if (msg.includes("native module") || msg.includes("pty.node") || msg.includes("Cannot find module")) {
+              const run = dispatchAction(actionId, action, repoRoot);
+              sendJson(response, 200, { ok: true, runId: run.runId, actionId, status: "running", terminalMode: "pipe", ptyUnavailable: true });
+            } else {
+              throw ptyErr;
+            }
+          }
         } else {
           const run = dispatchAction(actionId, action, repoRoot);
           sendJson(response, 200, { ok: true, runId: run.runId, actionId, status: "running", terminalMode: "pipe" });
