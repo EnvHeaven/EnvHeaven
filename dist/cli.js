@@ -590,42 +590,60 @@ async function main() {
             return;
         }
         if (runnableArtifacts.length > 1 && !(0, diagnostics_1.hasErrors)(diagnostics)) {
-            for (const entry of runnableArtifacts) {
+            const waitForPortOpen = async (port, timeoutMs = 15000, pollMs = 300) => {
+                const deadline = Date.now() + timeoutMs;
+                while (Date.now() < deadline) {
+                    if (await (0, lock_1.isPortOpen)(port))
+                        return true;
+                    await new Promise((r) => setTimeout(r, pollMs));
+                }
+                return false;
+            };
+            const pluginCache = new Map();
+            const promises = runnableArtifacts.map(async (entry) => {
                 const exec = entry.execution;
                 const port = (0, port_utils_1.extractPortFromExecution)(exec.args, exec.env);
                 const artifactMeta = repoModel.artifacts[entry.artifactName];
                 const publicName = (artifactMeta?.PublicName ?? artifactMeta?.publicName ?? entry.artifactName);
                 const url = port ? `http://localhost:${String(port)}/` : null;
                 process.stdout.write(`  [starting] ${publicName}${url ? ` — ${url}` : ""}\n`);
-            }
-            const pluginCache = new Map();
-            const promises = runnableArtifacts.map(async (entry) => {
-                const exec = entry.execution;
-                const pkg = exec.pluginPackage;
-                if (!pkg) {
-                    const spawnResult = await (0, spawn_1.spawnExecution)({
-                        command: exec.command,
-                        args: exec.args,
-                        env: exec.env,
-                        cwd: exec.cwd,
-                    });
-                    return spawnResult.exitCode;
+                const spawnPromise = (async () => {
+                    const pkg = exec.pluginPackage;
+                    if (!pkg) {
+                        const spawnResult = await (0, spawn_1.spawnExecution)({
+                            command: exec.command,
+                            args: exec.args,
+                            env: exec.env,
+                            cwd: exec.cwd,
+                        });
+                        return spawnResult.exitCode;
+                    }
+                    let loaded = pluginCache.get(pkg);
+                    if (!loaded) {
+                        loaded = await (0, loader_1.loadPlugin)(pkg, repoRoot);
+                        pluginCache.set(pkg, loaded);
+                    }
+                    if (loaded.plugin.execute) {
+                        const singlePlan = {
+                            ...plan,
+                            execution: exec,
+                            pluginPackage: pkg,
+                        };
+                        const result = await loaded.plugin.execute(singlePlan, runtimeContext);
+                        return result.exitCode ?? 1;
+                    }
+                    return 1;
+                })();
+                if (port) {
+                    const ready = await Promise.race([
+                        waitForPortOpen(port),
+                        spawnPromise.then(() => false),
+                    ]);
+                    if (ready) {
+                        process.stdout.write(`  [ok] ${publicName}${url ? ` — ${url}` : ""}\n`);
+                    }
                 }
-                let loaded = pluginCache.get(pkg);
-                if (!loaded) {
-                    loaded = await (0, loader_1.loadPlugin)(pkg, repoRoot);
-                    pluginCache.set(pkg, loaded);
-                }
-                if (loaded.plugin.execute) {
-                    const singlePlan = {
-                        ...plan,
-                        execution: exec,
-                        pluginPackage: pkg,
-                    };
-                    const result = await loaded.plugin.execute(singlePlan, runtimeContext);
-                    return result.exitCode ?? 1;
-                }
-                return 1;
+                return spawnPromise;
             });
             const results = await Promise.all(promises);
             const exitCode = results.some((c) => c !== 0) ? 1 : 0;
