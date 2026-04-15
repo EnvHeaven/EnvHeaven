@@ -473,7 +473,7 @@ function materializeTemplateString(value, artifactName, templateContext, diagnos
     if (typeof value !== "string") {
         return undefined;
     }
-    const replaced = value.replace(/\{\{\s*(GetFinalRepoCloneFolderPathOf|GetFinalPortOf|GetFinalEnvMapNameOf|GetFinalEnvVarsAsJson)\('([^']+)'\)\s*\}\}/g, (_match, templateName, templateArtifactName) => {
+    const replaced = value.replace(/\{\{\s*(GetFinalRepoCloneFolderPathOf|GetFinalPortOf|GetFinalEnvMapNameOf|GetFinalEnvVarsAsJson)\((['"`])([^'"`]+)\2\)\s*\}\}/g, (_match, templateName, _quote, templateArtifactName) => {
         if (templateArtifactName !== artifactName) {
             diagnostics.push((0, diagnostics_1.createDiagnostic)("warning", "artifact-template-mismatch", `Template references artifact "${templateArtifactName}" but runner is bound to "${artifactName}".`));
             return "";

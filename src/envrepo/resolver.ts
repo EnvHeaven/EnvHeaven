@@ -738,7 +738,7 @@ function materializeTemplateString(
     return undefined;
   }
 
-  const replaced = value.replace(/\{\{\s*(GetFinalRepoCloneFolderPathOf|GetFinalPortOf|GetFinalEnvMapNameOf|GetFinalEnvVarsAsJson)\('([^']+)'\)\s*\}\}/g, (_match, templateName: string, templateArtifactName: string) => {
+  const replaced = value.replace(/\{\{\s*(GetFinalRepoCloneFolderPathOf|GetFinalPortOf|GetFinalEnvMapNameOf|GetFinalEnvVarsAsJson)\((['"`])([^'"`]+)\2\)\s*\}\}/g, (_match, templateName: string, _quote: string, templateArtifactName: string) => {
     if (templateArtifactName !== artifactName) {
       diagnostics.push(
         createDiagnostic(

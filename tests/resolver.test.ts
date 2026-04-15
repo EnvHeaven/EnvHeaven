@@ -61,6 +61,23 @@ test("materializes fake-local-01 artifact execution plans through ArtifactsRunne
   assert.match(firebaseArtifact?.execution?.env.EH_ENV_VARS_JSON ?? "", /"EH_PROFILE":"fake-local"/);
 });
 
+test("materializes artifact templates using single quotes, double quotes, and backticks", async () => {
+  const repoRoot = path.join(fixturesRoot, "repo-basic");
+  const discovery = await discoverEnvRepo(repoRoot);
+  const repoModel = buildRepoModel(discovery);
+  const plan = resolvePlan(repoModel, "local");
+
+  assert.equal(plan.execution?.command, "node");
+  assert.deepEqual(plan.execution?.args, [
+    "serve",
+    path.resolve(repoRoot, "repos/local/envheaven-type-this-01"),
+    "4101",
+  ]);
+  assert.equal(plan.execution?.cwd, path.resolve(repoRoot, "repos/local/envheaven-type-this-01"));
+  assert.equal(plan.execution?.env.EH_ENV_MAP_NAME, "local-01");
+  assert.match(plan.execution?.env.EH_ENV_VARS_JSON ?? "", /"EH_PROFILE":"local"/);
+});
+
 test("rejects unsupported conditions after TargetName dereferencing", async () => {
   const repoRoot = path.join(fixturesRoot, "repo-malformed-target");
   const discovery = await discoverEnvRepo(repoRoot);
