@@ -9,11 +9,12 @@ export function materializeDynamicVersionToken(
   value: string,
   artifactName: string,
   resolvedVersion: string,
+  artifactVersions: Record<string, string> = {},
 ): string {
   const withFunctionTemplates = value.replace(
     DYNAMIC_ARTIFACT_VERSION_FUNCTION_PATTERN,
     (match, _quote: string, tokenArtifactName: string) =>
-      tokenArtifactName === artifactName ? resolvedVersion : match,
+      artifactVersions[tokenArtifactName] ?? (tokenArtifactName === artifactName ? resolvedVersion : match),
   );
 
   return withFunctionTemplates.replace(
@@ -26,16 +27,17 @@ export function materializeDynamicVersionExecution(
   execution: ExecutionSpec,
   artifactName: string,
   resolvedVersion: string,
+  artifactVersions: Record<string, string> = {},
 ): ExecutionSpec {
   return {
     ...execution,
     args: execution.args.map((arg) =>
-      materializeDynamicVersionToken(arg, artifactName, resolvedVersion),
+      materializeDynamicVersionToken(arg, artifactName, resolvedVersion, artifactVersions),
     ),
     env: Object.fromEntries(
       Object.entries(execution.env).map(([key, value]) => [
         key,
-        materializeDynamicVersionToken(value, artifactName, resolvedVersion),
+        materializeDynamicVersionToken(value, artifactName, resolvedVersion, artifactVersions),
       ]),
     ),
   };

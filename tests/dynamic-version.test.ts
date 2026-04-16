@@ -46,3 +46,29 @@ test("materializeDynamicVersionExecution resolves artifact EnvVars JSON payloads
     "{{GetDynamicArtifactVersionOf('other-artifact-01')}}",
   );
 });
+
+test("materializeDynamicVersionExecution resolves cross-artifact version templates when a version map is provided", () => {
+  const execution: ExecutionSpec = {
+    command: "node",
+    args: [
+      `ENV_VARS={"API_VERSION":"{{GetDynamicArtifactVersionOf('api-01')}}","FE_VERSION":"{{GetDynamicArtifactVersionOf(\`web-app-01\`)}}"}`,
+    ],
+    env: {
+      API_VERSION: "{{GetDynamicArtifactVersionOf('api-01')}}",
+    },
+    cwd: "/tmp/example",
+  };
+
+  const hydrated = materializeDynamicVersionExecution(
+    execution,
+    "web-app-01",
+    "2.3.4",
+    { "web-app-01": "2.3.4", "api-01": "7.8.9" },
+  );
+
+  assert.equal(
+    hydrated.args[0],
+    'ENV_VARS={"API_VERSION":"7.8.9","FE_VERSION":"2.3.4"}',
+  );
+  assert.equal(hydrated.env["API_VERSION"], "7.8.9");
+});

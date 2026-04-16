@@ -39,6 +39,9 @@ test("materializes local-01 artifact execution plans through ArtifactsRunners", 
   assert.equal(plan.execution?.cwd, path.resolve(repoRoot, "repos/local/envheaven-type-this-01"));
   assert.equal(plan.execution?.env.EH_ENV_MAP_NAME, "local-01");
   assert.match(plan.execution?.env.EH_ENV_VARS_JSON ?? "", /"EH_PROFILE":"local"/);
+  assert.match(plan.execution?.env.EH_ENV_VARS_JSON ?? "", /"EH_SELF_PORT":"4101"/);
+  assert.match(plan.execution?.env.EH_ENV_VARS_JSON ?? "", /"EH_OTHER_PORT":"4102"/);
+  assert.match(plan.execution?.env.EH_ENV_VARS_JSON ?? "", /"EH_OTHER_ENV":"local-01"/);
   assert.ok(plan.artifactExecutions.some((artifactExecution) => artifactExecution.status === "runnable"));
   assert.ok(plan.artifactExecutions.some((artifactExecution) => artifactExecution.status === "partial"));
 });

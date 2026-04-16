@@ -568,11 +568,12 @@ async function main() {
                     null;
             plan.pluginPackage = plan.execution?.pluginPackage;
         }
+        const artifactVersionMap = await buildArtifactVersionMap(plan.artifactExecutions, runtimeContext.repoRoot, diagnostics, stateStore, repoModel.aliases);
         const hydratedArtifactExecutions = await Promise.all(plan.artifactExecutions.map(async (artifactExecution) => {
             if (artifactExecution.status !== "runnable" || !artifactExecution.execution) {
                 return artifactExecution;
             }
-            const hydrated = await hydrateArtifactExecution(artifactExecution, runtimeContext.repoRoot, diagnostics, stateStore, plan.resolvedTarget);
+            const hydrated = await hydrateArtifactExecution(artifactExecution, runtimeContext.repoRoot, diagnostics, stateStore, plan.resolvedTarget, artifactVersionMap);
             return {
                 ...artifactExecution,
                 execution: hydrated.execution,
@@ -601,7 +602,7 @@ async function main() {
             }
         }
         if (plan.repoExecutions.length > 0) {
-            const deployResults = await executeDeployPlan(plan, runtimeContext, diagnostics, stateStore, options);
+            const deployResults = await executeDeployPlan(plan, runtimeContext, diagnostics, stateStore, options, repoModel.aliases);
             (0, cli_output_1.verboseLog)("output written", options);
             (0, cli_output_1.writeOutput)({ intent, plan, deploy: deployResults.payload, deploySummary: deployResults.deploySummary, diagnostics }, (0, diagnostics_1.hasErrors)(diagnostics) ? 1 : deployResults.exitCode, options);
             return;
@@ -694,7 +695,7 @@ async function main() {
                     plan.artifactExecutions.find((artifactExecution) => artifactExecution.status === "runnable")?.execution ??
                     null;
         }
-        const deployResults = await executeDeployPlan(plan, runtimeContext, diagnostics, stateStore, options);
+        const deployResults = await executeDeployPlan(plan, runtimeContext, diagnostics, stateStore, options, repoModel.aliases);
         const exitCode = (0, diagnostics_1.hasErrors)(diagnostics) ? 1 : deployResults.exitCode;
         (0, cli_output_1.verboseLog)("output written", options);
         (0, cli_output_1.writeOutput)({ intent, plan, deploy: deployResults.payload, deploySummary: deployResults.deploySummary, diagnostics }, exitCode, options);
@@ -883,7 +884,7 @@ void main().catch((error) => {
     process.stdout.write(`${JSON.stringify({ diagnostics }, null, 2)}\n`);
     process.exitCode = 1;
 });
-async function executeDeployPlan(plan, runtimeContext, diagnostics, stateStore, options) {
+async function executeDeployPlan(plan, runtimeContext, diagnostics, stateStore, options, aliases) {
     const repoResults = [];
     const artifactResults = [];
     const deploySummary = [];
@@ -899,11 +900,12 @@ async function executeDeployPlan(plan, runtimeContext, diagnostics, stateStore, 
             return { exitCode, payload: { repoExecutions: repoResults, artifactExecutions: artifactResults }, deploySummary };
         }
     }
+    const artifactVersionMap = await buildArtifactVersionMap(plan.artifactExecutions, runtimeContext.repoRoot, diagnostics, stateStore, aliases);
     for (const artifactExecution of plan.artifactExecutions) {
         (0, cli_output_1.verboseLog)(`deploy step start: ${artifactExecution.runnerName}`, options);
         const existingRecord = await stateStore.getVersionRecord(runtimeContext.repoRoot, artifactExecution.artifactName, artifactExecution.packageName);
         const lastVersionBefore = existingRecord?.lastVersion ?? null;
-        const hydrated = await hydrateArtifactExecution(artifactExecution, runtimeContext.repoRoot, diagnostics, stateStore, plan.resolvedTarget);
+        const hydrated = await hydrateArtifactExecution(artifactExecution, runtimeContext.repoRoot, diagnostics, stateStore, plan.resolvedTarget, artifactVersionMap);
         const result = await executeArtifactDeploy(artifactExecution, hydrated.execution, hydrated.resolvedVersion, runtimeContext, diagnostics, stateStore, plan.resolvedTarget);
         (0, cli_output_1.verboseLog)(`deploy step done: ${artifactExecution.runnerName} (exit ${String(result.exitCode)})`, options);
         artifactResults.push(result.payload);
@@ -922,39 +924,57 @@ async function executeDeployPlan(plan, runtimeContext, diagnostics, stateStore, 
     }
     return { exitCode, payload: { repoExecutions: repoResults, artifactExecutions: artifactResults }, deploySummary };
 }
-async function hydrateArtifactExecution(artifactExecution, repoRoot, diagnostics, stateStore, deployTarget) {
+async function hydrateArtifactExecution(artifactExecution, repoRoot, diagnostics, stateStore, deployTarget, artifactVersionMap) {
     if (!artifactExecution.execution)
         return { execution: null, resolvedVersion: "0.1.0" };
-    const packageDirectory = artifactExecution.repoCloneFolderPath
-        ? node_path_1.default.resolve(repoRoot, artifactExecution.repoCloneFolderPath)
-        : artifactExecution.execution.cwd;
-    const existingRecord = await stateStore.getVersionRecord(repoRoot, artifactExecution.artifactName, artifactExecution.packageName);
-    let resolvedVersionValue;
-    if (existingRecord?.nextVersion) {
-        resolvedVersionValue = existingRecord.nextVersion;
-    }
-    else if (existingRecord?.lastVersion) {
-        resolvedVersionValue = existingRecord.lastVersion;
-    }
-    else {
-        let packageJsonVersion = "0.1.0";
-        if (packageDirectory) {
-            try {
-                const packageMetadata = await (0, runtime_1.readPackageMetadata)(packageDirectory);
-                packageJsonVersion = packageMetadata.version;
-            }
-            catch {
-                packageJsonVersion = "0.1.0";
-            }
-        }
-        const { record } = await stateStore.bootstrapArtifactVersion(repoRoot, artifactExecution.artifactName, artifactExecution.packageName, packageJsonVersion);
-        resolvedVersionValue = record.nextVersion ?? record.lastVersion ?? packageJsonVersion;
-        diagnostics.push((0, diagnostics_1.createDiagnostic)("info", "version-bootstrapped", `Artifact "${artifactExecution.artifactName}" version initialized to "${resolvedVersionValue}" (derived from package.json "${packageJsonVersion}").`));
-    }
+    const resolvedVersionValue = artifactVersionMap?.[artifactExecution.artifactName] ??
+        await resolveArtifactVersionValue(artifactExecution, repoRoot, diagnostics, stateStore, deployTarget);
     return {
-        execution: (0, dynamic_version_1.materializeDynamicVersionExecution)(artifactExecution.execution, artifactExecution.artifactName, resolvedVersionValue),
+        execution: (0, dynamic_version_1.materializeDynamicVersionExecution)(artifactExecution.execution, artifactExecution.artifactName, resolvedVersionValue, artifactVersionMap),
         resolvedVersion: resolvedVersionValue,
     };
+}
+async function buildArtifactVersionMap(artifactExecutions, repoRoot, diagnostics, stateStore, aliases) {
+    const entries = await Promise.all(artifactExecutions
+        .filter((artifactExecution) => artifactExecution.status === "runnable" && artifactExecution.execution)
+        .map(async (artifactExecution) => [
+        artifactExecution.artifactName,
+        await resolveArtifactVersionValue(artifactExecution, repoRoot, diagnostics, stateStore),
+    ]));
+    const versionMap = Object.fromEntries(entries);
+    for (const [alias, targets] of Object.entries(aliases)) {
+        const targetArtifactName = targets[0];
+        if (targetArtifactName && versionMap[targetArtifactName]) {
+            versionMap[alias] = versionMap[targetArtifactName];
+        }
+    }
+    return versionMap;
+}
+async function resolveArtifactVersionValue(artifactExecution, repoRoot, diagnostics, stateStore, _deployTarget) {
+    const packageDirectory = artifactExecution.repoCloneFolderPath
+        ? node_path_1.default.resolve(repoRoot, artifactExecution.repoCloneFolderPath)
+        : artifactExecution.execution?.cwd;
+    const existingRecord = await stateStore.getVersionRecord(repoRoot, artifactExecution.artifactName, artifactExecution.packageName);
+    if (existingRecord?.nextVersion) {
+        return existingRecord.nextVersion;
+    }
+    if (existingRecord?.lastVersion) {
+        return existingRecord.lastVersion;
+    }
+    let packageJsonVersion = "0.1.0";
+    if (packageDirectory) {
+        try {
+            const packageMetadata = await (0, runtime_1.readPackageMetadata)(packageDirectory);
+            packageJsonVersion = packageMetadata.version;
+        }
+        catch {
+            packageJsonVersion = "0.1.0";
+        }
+    }
+    const { record } = await stateStore.bootstrapArtifactVersion(repoRoot, artifactExecution.artifactName, artifactExecution.packageName, packageJsonVersion);
+    const resolvedVersionValue = record.nextVersion ?? record.lastVersion ?? packageJsonVersion;
+    diagnostics.push((0, diagnostics_1.createDiagnostic)("info", "version-bootstrapped", `Artifact "${artifactExecution.artifactName}" version initialized to "${resolvedVersionValue}" (derived from package.json "${packageJsonVersion}").`));
+    return resolvedVersionValue;
 }
 async function executeArtifactDeploy(artifactExecution, hydratedExecution, hydratedVersion, runtimeContext, diagnostics, stateStore, deployTarget) {
     if (!hydratedExecution) {
