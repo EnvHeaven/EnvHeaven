@@ -568,6 +568,22 @@ async function main() {
                     null;
             plan.pluginPackage = plan.execution?.pluginPackage;
         }
+        const hydratedArtifactExecutions = await Promise.all(plan.artifactExecutions.map(async (artifactExecution) => {
+            if (artifactExecution.status !== "runnable" || !artifactExecution.execution) {
+                return artifactExecution;
+            }
+            const hydrated = await hydrateArtifactExecution(artifactExecution, runtimeContext.repoRoot, diagnostics, stateStore, plan.resolvedTarget);
+            return {
+                ...artifactExecution,
+                execution: hydrated.execution,
+            };
+        }));
+        plan.artifactExecutions = hydratedArtifactExecutions;
+        plan.execution =
+            plan.repoExecutions.find((repoExecution) => repoExecution.status === "runnable")?.execution ??
+                plan.artifactExecutions.find((artifactExecution) => artifactExecution.status === "runnable")?.execution ??
+                null;
+        plan.pluginPackage = plan.execution?.pluginPackage;
         const runnableArtifacts = plan.artifactExecutions.filter((a) => a.status === "runnable" && a.execution);
         for (const entry of runnableArtifacts) {
             const exec = entry.execution;
