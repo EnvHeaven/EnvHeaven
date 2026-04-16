@@ -15,6 +15,7 @@ import {
   stageAndPackLocal,
   withTemporaryPackageVersion,
 } from "./deploy/runtime";
+import { materializeDynamicVersionExecution } from "./deploy/dynamic-version";
 import { applyPnpmRecursiveFilter, isLocalGlobalInstall } from "./deploy/plan-filter";
 import { resolveArtifactSelection } from "./deploy/selection";
 import { createDiagnostic, hasErrors } from "./diagnostics";
@@ -1199,18 +1200,11 @@ async function hydrateArtifactExecution(
   }
 
   return {
-    execution: {
-      ...artifactExecution.execution,
-      args: artifactExecution.execution.args.map((arg) =>
-        materializeDynamicVersionToken(arg, artifactExecution.artifactName, resolvedVersionValue),
-      ),
-      env: Object.fromEntries(
-        Object.entries(artifactExecution.execution.env).map(([key, value]) => [
-          key,
-          materializeDynamicVersionToken(value, artifactExecution.artifactName, resolvedVersionValue),
-        ]),
-      ),
-    },
+    execution: materializeDynamicVersionExecution(
+      artifactExecution.execution,
+      artifactExecution.artifactName,
+      resolvedVersionValue,
+    ),
     resolvedVersion: resolvedVersionValue,
   };
 }
@@ -1330,17 +1324,6 @@ async function executeArtifactDeploy(
   }
 
   return { exitCode: (result.exitCode as number) ?? 1, payload };
-}
-
-function materializeDynamicVersionToken(value: string, artifactName: string, resolvedVersion: string): string {
-  if (value === "dynamic-artifact-version") {
-    return resolvedVersion;
-  }
-  return value.replace(
-    /\{\{\s*GetDynamicArtifactVersionOf\('([^']+)'\)\s*\}\}/g,
-    (_match, tokenArtifactName: string) =>
-      tokenArtifactName === artifactName ? resolvedVersion : _match,
-  );
 }
 
 async function executePlanItem(

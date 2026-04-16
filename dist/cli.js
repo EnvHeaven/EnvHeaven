@@ -47,6 +47,7 @@ const cli_output_1 = require("./cli-output");
 const intent_1 = require("./commands/intent");
 const server_1 = require("./daemon/server");
 const runtime_1 = require("./deploy/runtime");
+const dynamic_version_1 = require("./deploy/dynamic-version");
 const plan_filter_1 = require("./deploy/plan-filter");
 const selection_1 = require("./deploy/selection");
 const diagnostics_1 = require("./diagnostics");
@@ -935,14 +936,7 @@ async function hydrateArtifactExecution(artifactExecution, repoRoot, diagnostics
         diagnostics.push((0, diagnostics_1.createDiagnostic)("info", "version-bootstrapped", `Artifact "${artifactExecution.artifactName}" version initialized to "${resolvedVersionValue}" (derived from package.json "${packageJsonVersion}").`));
     }
     return {
-        execution: {
-            ...artifactExecution.execution,
-            args: artifactExecution.execution.args.map((arg) => materializeDynamicVersionToken(arg, artifactExecution.artifactName, resolvedVersionValue)),
-            env: Object.fromEntries(Object.entries(artifactExecution.execution.env).map(([key, value]) => [
-                key,
-                materializeDynamicVersionToken(value, artifactExecution.artifactName, resolvedVersionValue),
-            ])),
-        },
+        execution: (0, dynamic_version_1.materializeDynamicVersionExecution)(artifactExecution.execution, artifactExecution.artifactName, resolvedVersionValue),
         resolvedVersion: resolvedVersionValue,
     };
 }
@@ -1031,12 +1025,6 @@ async function executeArtifactDeploy(artifactExecution, hydratedExecution, hydra
         }
     }
     return { exitCode: result.exitCode ?? 1, payload };
-}
-function materializeDynamicVersionToken(value, artifactName, resolvedVersion) {
-    if (value === "dynamic-artifact-version") {
-        return resolvedVersion;
-    }
-    return value.replace(/\{\{\s*GetDynamicArtifactVersionOf\('([^']+)'\)\s*\}\}/g, (_match, tokenArtifactName) => tokenArtifactName === artifactName ? resolvedVersion : _match);
 }
 async function executePlanItem(name, execution, runtimeContext, diagnostics) {
     if (!execution)
