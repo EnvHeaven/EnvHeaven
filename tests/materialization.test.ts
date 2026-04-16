@@ -54,7 +54,7 @@ describe("resolveVariables", () => {
 describe("materializeBuildContext", () => {
   it("writes and reads back build context", async () => {
     const context = buildBuildContext(
-      "web-app-front-end-01",
+      "web-site-01-fe-01",
       "beta-01",
       "beta",
       "2.0.0",
@@ -69,7 +69,7 @@ describe("materializeBuildContext", () => {
     assert.notStrictEqual(readBack, null);
     assert.strictEqual(readBack!.version, "2.0.0");
     assert.strictEqual(readBack!.target, "beta-01");
-    assert.strictEqual(readBack!.artifactName, "web-app-front-end-01");
+    assert.strictEqual(readBack!.artifactName, "web-site-01-fe-01");
   });
 
   it("cleanBuildContext removes the file", async () => {

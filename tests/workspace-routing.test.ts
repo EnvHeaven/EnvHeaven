@@ -50,30 +50,30 @@ describe("resolveWorkspaceRoot", () => {
 describe("matchArtifactToEnvMap", () => {
   it("matches artifact by RepoCloneFolderPath", () => {
     const artifacts = {
-      "web-app-front-end-01": {
+      "web-site-01-fe-01": {
         RepoCloneFolderPath: "./artifacts/jd-eh-ws-fe-01",
       },
-      "web-app-cdn-01": {
+      "eh-web-site-01-cdn-01": {
         RepoCloneFolderPath: "./artifacts/jd-eh-ws-fe-cdn-01",
       },
     };
     const matched = matchArtifactToEnvMap("./artifacts/jd-eh-ws-fe-01", artifacts);
-    assert.strictEqual(matched, "web-app-front-end-01");
+    assert.strictEqual(matched, "web-site-01-fe-01");
   });
 
   it("matches without leading ./", () => {
     const artifacts = {
-      "web-app-cdn-01": {
+      "eh-web-site-01-cdn-01": {
         RepoCloneFolderPath: "./artifacts/jd-eh-ws-fe-cdn-01",
       },
     };
     const matched = matchArtifactToEnvMap("artifacts/jd-eh-ws-fe-cdn-01", artifacts);
-    assert.strictEqual(matched, "web-app-cdn-01");
+    assert.strictEqual(matched, "eh-web-site-01-cdn-01");
   });
 
   it("returns null when no match", () => {
     const artifacts = {
-      "web-app-cdn-01": {
+      "eh-web-site-01-cdn-01": {
         RepoCloneFolderPath: "./artifacts/other",
       },
     };

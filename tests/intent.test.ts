@@ -25,11 +25,11 @@ const acceptedCases = [
   { args: ["deploy", "production-01"], kind: "deploy", target: "production-01" },
   { args: ["deploy", "production", "@envheaven/plugins-nodejs-pnpm"], kind: "deploy", target: "production-01" },
   { args: ["deploy", "local", "envheaven"], kind: "deploy", target: "local-01" },
-  { args: ["run", "local", "web-app-cdn-01"], kind: "run", target: "local" },
-  { args: ["run", "web-app-cdn-01", "local"], kind: "run", target: "local" },
+  { args: ["run", "local", "eh-web-site-01-cdn-01"], kind: "run", target: "local" },
+  { args: ["run", "eh-web-site-01-cdn-01", "local"], kind: "run", target: "local" },
   { args: ["run", "development"], kind: "run", target: "development" },
   { args: ["run", "development-01"], kind: "run", target: "development-01" },
-  { args: ["run", "development", "web-app-front-end-01"], kind: "run", target: "development" },
+  { args: ["run", "development", "web-site-01-fe-01"], kind: "run", target: "development" },
 ];
 
 for (const acceptedCase of acceptedCases) {
@@ -48,8 +48,8 @@ test("captures deploy artifact selectors without changing target resolution", ()
 });
 
 test("captures run artifact selectors without changing target resolution", () => {
-  const result = inferCommandIntent(["run", "local", "web-app-cdn-01"]);
-  assert.deepEqual(result.intent?.artifactSelectors, ["web-app-cdn-01"]);
+  const result = inferCommandIntent(["run", "local", "eh-web-site-01-cdn-01"]);
+  assert.deepEqual(result.intent?.artifactSelectors, ["eh-web-site-01-cdn-01"]);
 });
 
 const rejectedCases = [
