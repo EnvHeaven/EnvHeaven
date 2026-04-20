@@ -183,12 +183,12 @@ export function validateWebUiChallengeResponse(
 
 export function readLineFromStreams(
   input: Readable = process.stdin,
-  output: Writable = process.stdout,
+  _output: Writable = process.stdout,
 ): Promise<string> {
   return new Promise((resolve) => {
     const rl = readline.createInterface({
       input,
-      output,
+      terminal: false,
     });
     let settled = false;
 

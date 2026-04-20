@@ -1068,33 +1068,35 @@ async function executePlanItem(name, execution, runtimeContext, diagnostics) {
     if (execution.pluginPackage) {
         const loadedPlugin = await (0, loader_1.loadPlugin)(execution.pluginPackage, runtimeContext.repoRoot);
         diagnostics.push(...loadedPlugin.diagnostics);
-        if (loadedPlugin.plugin.inspect) {
-            const inspected = await loadedPlugin.plugin.inspect(runtimeContext);
-            if (inspected.diagnostics)
-                diagnostics.push(...inspected.diagnostics);
-        }
-        if (!loadedPlugin.plugin.execute) {
-            diagnostics.push((0, diagnostics_1.createDiagnostic)("error", "plugin-execute-missing", `Plugin "${execution.pluginPackage}" does not export execute().`));
-            return { exitCode: 1 };
-        }
-        const executed = await loadedPlugin.plugin.execute({
-            kind: "run",
-            requestedTarget: "default",
-            resolvedTarget: "default",
-            targetResolutionTrace: [],
-            mergeOrder: [],
-            selectedArtifacts: [],
-            diagnostics: [],
-            trace: [],
-            repoExecutions: [],
-            artifactExecutions: [],
-            execution,
-            pluginPackage: execution.pluginPackage,
-            resolvedModel: {},
-        }, runtimeContext);
-        if (executed.diagnostics)
-            diagnostics.push(...executed.diagnostics);
-        return { exitCode: executed.exitCode, details: executed.details };
+        return await withInjectedProcessEnv(execution.env, async () => {
+            if (loadedPlugin.plugin.inspect) {
+                const inspected = await loadedPlugin.plugin.inspect(runtimeContext);
+                if (inspected.diagnostics)
+                    diagnostics.push(...inspected.diagnostics);
+            }
+            if (!loadedPlugin.plugin.execute) {
+                diagnostics.push((0, diagnostics_1.createDiagnostic)("error", "plugin-execute-missing", `Plugin "${execution.pluginPackage}" does not export execute().`));
+                return { exitCode: 1 };
+            }
+            const executed = await loadedPlugin.plugin.execute({
+                kind: "run",
+                requestedTarget: "default",
+                resolvedTarget: "default",
+                targetResolutionTrace: [],
+                mergeOrder: [],
+                selectedArtifacts: [],
+                diagnostics: [],
+                trace: [],
+                repoExecutions: [],
+                artifactExecutions: [],
+                execution,
+                pluginPackage: execution.pluginPackage,
+                resolvedModel: {},
+            }, runtimeContext);
+            if (executed.diagnostics)
+                diagnostics.push(...executed.diagnostics);
+            return { exitCode: executed.exitCode, details: executed.details };
+        });
     }
     if (!execution.command)
         return { skipped: true, exitCode: 0 };
@@ -1105,4 +1107,24 @@ async function executePlanItem(name, execution, runtimeContext, diagnostics) {
         cwd: execution.cwd,
     });
     return { exitCode: result.exitCode };
+}
+async function withInjectedProcessEnv(env, action) {
+    const originalValues = new Map();
+    for (const [key, value] of Object.entries(env)) {
+        originalValues.set(key, process.env[key]);
+        process.env[key] = value;
+    }
+    try {
+        return await action();
+    }
+    finally {
+        for (const [key, value] of originalValues) {
+            if (value === undefined) {
+                delete process.env[key];
+            }
+            else {
+                process.env[key] = value;
+            }
+        }
+    }
 }

@@ -187,4 +187,21 @@ describe("readLineFromStreams", () => {
     const result = await promise;
     assert.strictEqual(result, "development-531");
   });
+
+  it("does not redraw prompt output while user edits input", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let captured = "";
+
+    output.on("data", (chunk) => {
+      captured += chunk.toString("utf8");
+    });
+
+    const promise = readLineFromStreams(input, output);
+    input.write("development-53\b8\n");
+
+    const result = await promise;
+    assert.strictEqual(result, "development-53\b8");
+    assert.strictEqual(captured, "");
+  });
 });

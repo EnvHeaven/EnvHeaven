@@ -86,13 +86,31 @@ function normalizeExecutionGroups(value) {
 }
 function normalizeLayer(file) {
     const payload = file.payload ?? {};
+    const sharedLayerSections = normalizeSharedLayerSections(payload);
+    const envMapLayers = normalizeEnvMapLayers(payload.EnvMapLayers);
+    for (const [layerName, layerValue] of Object.entries(envMapLayers)) {
+        envMapLayers[layerName] = deepMergeObjects(layerValue, sharedLayerSections);
+    }
     return {
         sourcePath: file.sourcePath,
         fileName: file.fileName,
-        envMapLayers: normalizeEnvMapLayers(payload.EnvMapLayers),
+        envMapLayers,
         aliases: normalizeAliases(payload.aliases ?? payload.Aliases),
         fallbackList: normalizeStringArray(payload["fallback-list"] ?? payload.fallbackList ?? payload.FallbackList),
     };
+}
+function normalizeSharedLayerSections(payload) {
+    const result = {};
+    if (isRecord(payload.ArtifactsRunners)) {
+        result.ArtifactsRunners = deepCloneRecord(payload.ArtifactsRunners);
+    }
+    if (isRecord(payload.ArtifactsDistributors)) {
+        result.ArtifactsDistributors = deepCloneRecord(payload.ArtifactsDistributors);
+    }
+    if (isRecord(payload.RepoDeployExecutions)) {
+        result.RepoDeployExecutions = deepCloneRecord(payload.RepoDeployExecutions);
+    }
+    return result;
 }
 function normalizeEnvMapLayers(value) {
     if (!isRecord(value)) {

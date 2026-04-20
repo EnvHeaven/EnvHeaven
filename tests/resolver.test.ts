@@ -64,6 +64,33 @@ test("materializes fake-local-01 artifact execution plans through ArtifactsRunne
   assert.match(firebaseArtifact?.execution?.env.EH_ENV_VARS_JSON ?? "", /"EH_PROFILE":"fake-local"/);
 });
 
+test("materializes distributor DeployTarget from resolvedTarget template", async () => {
+  const repoRoot = path.join(fixturesRoot, "repo-basic");
+  const discovery = await discoverEnvRepo(repoRoot);
+  const repoModel = buildRepoModel(discovery);
+  const plan = resolvePlan(repoModel, "fake-local", "deploy");
+
+  assert.equal(plan.kind, "deploy");
+  assert.equal(plan.requestedTarget, "fake-local");
+  assert.equal(plan.resolvedTarget, "fake-local-01");
+  assert.equal(plan.repoExecutions.length, 0);
+  assert.equal(plan.artifactExecutions.filter((entry) => entry.status === "runnable").length, 2);
+
+  const deployArtifact = plan.artifactExecutions.find(
+    (entry) => entry.runnerName === "firebase-hosting-deploy",
+  );
+  assert.equal(deployArtifact?.execution?.pluginPackage, "@envheaven/plugins-firebase-hosting-deploy");
+  assert.deepEqual(deployArtifact?.execution?.args, ["deploy", "fake-local-01"]);
+  assert.match(deployArtifact?.execution?.env.EH_ENV_VARS_JSON ?? "", /"EH_PROFILE":"fake-local"/);
+
+  const managedArtifact = plan.artifactExecutions.find(
+    (entry) => entry.runnerName === "firebase-hosting-plugin-managed",
+  );
+  assert.equal(managedArtifact?.execution?.pluginPackage, "@envheaven/plugins-firebase-hosting-deploy");
+  assert.equal(managedArtifact?.execution?.command, undefined);
+  assert.equal(managedArtifact?.execution?.env.EH_DEPLOY_ENV, "layer-file-distributor");
+});
+
 test("materializes artifact templates using single quotes, double quotes, and backticks", async () => {
   const repoRoot = path.join(fixturesRoot, "repo-basic");
   const discovery = await discoverEnvRepo(repoRoot);
@@ -100,6 +127,24 @@ test("loads renamed scoped plugins from local fixture metadata", async () => {
   assert.equal(firebasePlugin.diagnostics.length, 0);
   assert.ok(typeof nodePlugin.plugin.inspect === "function");
   assert.ok(typeof firebasePlugin.plugin.execute === "function");
+});
+
+test("falls back to global node_modules when plugin is not installed in repo", async () => {
+  const repoRoot = path.join(fixturesRoot, "repo-cycle");
+  const previousGlobalRoot = process.env.ENVHEAVEN_GLOBAL_NODE_MODULES;
+  process.env.ENVHEAVEN_GLOBAL_NODE_MODULES = path.join(fixturesRoot, "repo-basic", "node_modules");
+
+  try {
+    const plugin = await loadPlugin("@envheaven/plugins-nodejs-pnpm", repoRoot);
+    assert.equal(plugin.diagnostics.length, 0);
+    assert.ok(typeof plugin.plugin.inspect === "function");
+  } finally {
+    if (previousGlobalRoot === undefined) {
+      delete process.env.ENVHEAVEN_GLOBAL_NODE_MODULES;
+    } else {
+      process.env.ENVHEAVEN_GLOBAL_NODE_MODULES = previousGlobalRoot;
+    }
+  }
 });
 
 test("rejects legacy invalid scoped plugin package names", async () => {

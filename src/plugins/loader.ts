@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { createDiagnostic } from "../diagnostics";
@@ -24,34 +25,26 @@ export async function loadPlugin(packageName: string, repoRoot: string): Promise
   const localRequire = createRequire(path.join(repoRoot, "package.json"));
 
   try {
-    const resolvedPath = localRequire.resolve(packageName);
-    const imported = localRequire(resolvedPath) as { default?: unknown } | EnvHeavenPlugin;
-    const plugin = normalizePlugin(imported);
+    return loadPluginFromRequire(packageName, localRequire, diagnostics);
+  } catch (error) {
+    const globalErrorMessages: string[] = [];
 
-    if (!plugin.inspect && !plugin.execute) {
-      diagnostics.push(
-        createDiagnostic(
-          "error",
-          "plugin-contract-invalid",
-          `Plugin "${packageName}" must export inspect() and/or execute().`,
-          resolvedPath,
-        ),
-      );
+    for (const globalModulesRoot of getGlobalModulesRoots()) {
+      try {
+        const globalRequire = createRequire(path.join(globalModulesRoot, "package.json"));
+        return loadPluginFromRequire(packageName, globalRequire, diagnostics);
+      } catch (globalError) {
+        globalErrorMessages.push(globalError instanceof Error ? globalError.message : String(globalError));
+      }
     }
 
-    return {
-      packageName,
-      resolvedPath,
-      plugin,
-      diagnostics,
-    };
-  } catch (error) {
     diagnostics.push(
       createDiagnostic(
         "error",
         "plugin-load-failed",
         error instanceof Error ? error.message : `Failed to load "${packageName}".`,
         repoRoot,
+        globalErrorMessages.length > 0 ? { globalErrorMessages } : undefined,
       ),
     );
 
@@ -62,6 +55,58 @@ export async function loadPlugin(packageName: string, repoRoot: string): Promise
       diagnostics,
     };
   }
+}
+
+function loadPluginFromRequire(
+  packageName: string,
+  requireFn: NodeJS.Require,
+  diagnostics: Diagnostic[],
+): LoadedPlugin {
+  const resolvedPath = requireFn.resolve(packageName);
+  const imported = requireFn(resolvedPath) as { default?: unknown } | EnvHeavenPlugin;
+  const plugin = normalizePlugin(imported);
+
+  if (!plugin.inspect && !plugin.execute) {
+    diagnostics.push(
+      createDiagnostic(
+        "error",
+        "plugin-contract-invalid",
+        `Plugin "${packageName}" must export inspect() and/or execute().`,
+        resolvedPath,
+      ),
+    );
+  }
+
+  return {
+    packageName,
+    resolvedPath,
+    plugin,
+    diagnostics,
+  };
+}
+
+function getGlobalModulesRoots(): string[] {
+  const roots = new Set<string>();
+  const envRoot = process.env.ENVHEAVEN_GLOBAL_NODE_MODULES;
+  if (envRoot) {
+    roots.add(envRoot);
+  }
+
+  for (const command of ["pnpm", "npm"]) {
+    try {
+      const output = execFileSync(command, ["root", "-g"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      if (output) {
+        roots.add(output);
+      }
+    } catch {
+      // Ignore global package manager lookup failures.
+    }
+  }
+
+  return [...roots];
 }
 
 function validatePackageName(packageName: string): Diagnostic | null {

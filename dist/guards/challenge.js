@@ -132,11 +132,11 @@ function validateWebUiChallengeResponse(requirement, response) {
     diagnostics.push((0, diagnostics_1.createDiagnostic)("error", "challenge-failed", `Challenge response "${trimmed}" does not match expected "${requirement.phrase}". Deploy aborted.`));
     return { passed: false, diagnostics, requirement };
 }
-function readLineFromStreams(input = process.stdin, output = process.stdout) {
+function readLineFromStreams(input = process.stdin, _output = process.stdout) {
     return new Promise((resolve) => {
         const rl = readline.createInterface({
             input,
-            output,
+            terminal: false,
         });
         let settled = false;
         const settle = (value) => {

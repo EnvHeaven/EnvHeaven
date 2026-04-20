@@ -118,13 +118,38 @@ function normalizeExecutionGroups(value: unknown): Record<string, Record<string,
 
 function normalizeLayer(file: EnvRepoFile): NormalizedLayer {
   const payload = file.payload ?? {};
+  const sharedLayerSections = normalizeSharedLayerSections(payload);
+  const envMapLayers = normalizeEnvMapLayers(payload.EnvMapLayers);
+
+  for (const [layerName, layerValue] of Object.entries(envMapLayers)) {
+    envMapLayers[layerName] = deepMergeObjects(layerValue, sharedLayerSections);
+  }
+
   return {
     sourcePath: file.sourcePath,
     fileName: file.fileName,
-    envMapLayers: normalizeEnvMapLayers(payload.EnvMapLayers),
+    envMapLayers,
     aliases: normalizeAliases(payload.aliases ?? payload.Aliases),
     fallbackList: normalizeStringArray(payload["fallback-list"] ?? payload.fallbackList ?? payload.FallbackList),
   };
+}
+
+function normalizeSharedLayerSections(payload: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+
+  if (isRecord(payload.ArtifactsRunners)) {
+    result.ArtifactsRunners = deepCloneRecord(payload.ArtifactsRunners);
+  }
+
+  if (isRecord(payload.ArtifactsDistributors)) {
+    result.ArtifactsDistributors = deepCloneRecord(payload.ArtifactsDistributors);
+  }
+
+  if (isRecord(payload.RepoDeployExecutions)) {
+    result.RepoDeployExecutions = deepCloneRecord(payload.RepoDeployExecutions);
+  }
+
+  return result;
 }
 
 function normalizeEnvMapLayers(value: unknown): Record<string, Record<string, unknown>> {

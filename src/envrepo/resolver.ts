@@ -46,7 +46,7 @@ export function resolvePlan(
 
   const repoExecutions =
     kind === "deploy" || isDeployStyleRunTarget
-      ? materializeRepoDeployExecutions(repoModel, targetResolution.resolvedTarget, diagnostics)
+      ? materializeRepoDeployExecutions(repoModel, resolvedModel, targetResolution.resolvedTarget, diagnostics)
       : [];
   const artifactExecutions =
     kind === "deploy"
@@ -386,10 +386,11 @@ function materializeArtifactExecutions(
       baseTemplateContexts[alias] = baseTemplateContexts[targetArtifactName];
     }
   }
+  const runners = mergeNamedRecordGroups(repoModel.artifactsRunners, resolvedModel.ArtifactsRunners);
   const artifactExecutions: ArtifactExecutionPlan[] = [];
   const blockedByPlanErrors = hasErrors(diagnostics);
 
-  for (const [runnerName, runnerValue] of Object.entries(repoModel.artifactsRunners)) {
+  for (const [runnerName, runnerValue] of Object.entries(runners)) {
     const artifactDiagnostics: Diagnostic[] = [];
     const materializationTrace = [`runner:${runnerName}`];
     const artifactName = readArtifactName(runnerValue);
@@ -498,11 +499,13 @@ function materializeArtifactExecutions(
 
 function materializeRepoDeployExecutions(
   repoModel: RepoModel,
+  resolvedModel: Record<string, unknown>,
   resolvedTarget: string,
   diagnostics: Diagnostic[],
 ): RepoExecutionPlan[] {
   const blockedByPlanErrors = hasErrors(diagnostics);
-  const steps = repoModel.repoDeployExecutions[resolvedTarget] ?? [];
+  const repoDeployExecutions = mergeExecutionGroups(repoModel.repoDeployExecutions, resolvedModel.RepoDeployExecutions);
+  const steps = repoDeployExecutions[resolvedTarget] ?? [];
   const repoExecutions: RepoExecutionPlan[] = steps.map((step, index) => {
     const stepDiagnostics: Diagnostic[] = [];
     const name = typeof step.Name === "string" ? step.Name : `repo-step-${String(index + 1)}`;
@@ -577,8 +580,16 @@ function materializeArtifactDistributors(
     }
   }
   const blockedByPlanErrors = hasErrors(diagnostics);
-  const distributors = Object.entries(repoModel.artifactsDistributors)
-    .filter(([, distributorValue]) => readStringValue(distributorValue, ["DeployTarget", "deployTarget"]) === resolvedTarget)
+  const distributors = Object.entries(
+    mergeNamedRecordGroups(repoModel.artifactsDistributors, resolvedModel.ArtifactsDistributors),
+  )
+    .filter(
+      ([, distributorValue]) =>
+        materializeDeployTarget(
+          readStringValue(distributorValue, ["DeployTarget", "deployTarget"]),
+          resolvedTarget,
+        ) === resolvedTarget,
+    )
     .sort((left, right) => {
       const leftOrder = readNumericValue(left[1], ["Order", "order"]) ?? Number.MAX_SAFE_INTEGER;
       const rightOrder = readNumericValue(right[1], ["Order", "order"]) ?? Number.MAX_SAFE_INTEGER;
@@ -696,6 +707,49 @@ function materializeArtifactDistributors(
   return artifactExecutions;
 }
 
+function materializeDeployTarget(
+  value: string | undefined,
+  resolvedTarget: string,
+): string | undefined {
+  if (!value) {
+    return value;
+  }
+
+  return value.replace(/\{\{\s*resolvedTarget\s*\}\}/g, resolvedTarget);
+}
+
+function mergeNamedRecordGroups(
+  base: Record<string, Record<string, unknown>>,
+  overrideValue: unknown,
+): Record<string, Record<string, unknown>> {
+  const overrides = normalizeNamedRecords(overrideValue);
+  const merged: Record<string, Record<string, unknown>> = Object.fromEntries(
+    Object.entries(base).map(([key, value]) => [key, deepMergeObjects({}, value)]),
+  );
+
+  for (const [key, value] of Object.entries(overrides)) {
+    merged[key] = deepMergeObjects(merged[key] ?? {}, value);
+  }
+
+  return merged;
+}
+
+function mergeExecutionGroups(
+  base: Record<string, Record<string, unknown>[]>,
+  overrideValue: unknown,
+): Record<string, Record<string, unknown>[]> {
+  const overrides = normalizeExecutionGroups(overrideValue);
+  const merged: Record<string, Record<string, unknown>[]> = Object.fromEntries(
+    Object.entries(base).map(([key, value]) => [key, value.map((item) => deepMergeObjects({}, item))]),
+  );
+
+  for (const [key, value] of Object.entries(overrides)) {
+    merged[key] = value.map((item) => deepMergeObjects({}, item));
+  }
+
+  return merged;
+}
+
 function materializeExecutionRecord(
   runnerName: string,
   artifactName: string,
@@ -712,17 +766,6 @@ function materializeExecutionRecord(
     return null;
   }
 
-  const command = materializeTemplateString(executionRecord.command, artifactName, templateContext, diagnostics, "command");
-  if (!command) {
-    diagnostics.push(
-      createDiagnostic("warning", "execution-command-missing", `Runner "${runnerName}" is missing Execution.command.`),
-    );
-    return null;
-  }
-
-  const args = materializeStringArray(executionRecord.args, artifactName, templateContext, diagnostics, "args");
-  const env = materializeStringMap(executionRecord.env, artifactName, templateContext, diagnostics, "env");
-  const cwdValue = materializeTemplateString(executionRecord.cwd, artifactName, templateContext, diagnostics, "cwd");
   const pluginPackage = materializeTemplateString(
     readPluginPackage(executionRecord, runnerValue),
     artifactName,
@@ -730,6 +773,19 @@ function materializeExecutionRecord(
     diagnostics,
     "pluginPackage",
   );
+  const command = materializeTemplateString(executionRecord.command, artifactName, templateContext, diagnostics, "command");
+  if (!command) {
+    if (!pluginPackage) {
+      diagnostics.push(
+        createDiagnostic("warning", "execution-command-missing", `Runner "${runnerName}" is missing Execution.command.`),
+      );
+      return null;
+    }
+  }
+
+  const args = materializeStringArray(executionRecord.args, artifactName, templateContext, diagnostics, "args");
+  const env = materializeStringMap(executionRecord.env, artifactName, templateContext, diagnostics, "env");
+  const cwdValue = materializeTemplateString(executionRecord.cwd, artifactName, templateContext, diagnostics, "cwd");
 
   if (requirePluginPackage && !pluginPackage) {
     diagnostics.push(
@@ -742,7 +798,9 @@ function materializeExecutionRecord(
     return null;
   }
 
-  trace.push(`command:${command}`);
+  if (command) {
+    trace.push(`command:${command}`);
+  }
   return {
     pluginPackage,
     command,
@@ -983,6 +1041,25 @@ function normalizeNamedRecords(value: unknown): Record<string, Record<string, un
       result[key] = deepClone(entryValue);
     }
   }
+  return result;
+}
+
+function normalizeExecutionGroups(value: unknown): Record<string, Record<string, unknown>[]> {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  const result: Record<string, Record<string, unknown>[]> = {};
+  for (const [key, entryValue] of Object.entries(value)) {
+    if (!Array.isArray(entryValue)) {
+      continue;
+    }
+
+    result[key] = entryValue
+      .filter((item): item is Record<string, unknown> => isRecord(item))
+      .map((item) => deepMergeObjects({}, item));
+  }
+
   return result;
 }
 
