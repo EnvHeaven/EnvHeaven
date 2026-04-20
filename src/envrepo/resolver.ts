@@ -504,6 +504,37 @@ function materializeRepoDeployExecutions(
   diagnostics: Diagnostic[],
 ): RepoExecutionPlan[] {
   const blockedByPlanErrors = hasErrors(diagnostics);
+  const resolvedArtifacts = normalizeNamedRecords(resolvedModel.Artifacts);
+  const finalArtifacts = Object.fromEntries(
+    Object.entries(repoModel.artifacts).map(([artifactName, baseArtifact]) => [
+      artifactName,
+      deepMergeObjects(baseArtifact, resolvedArtifacts[artifactName] ?? {}),
+    ]),
+  );
+  const baseTemplateContexts = Object.fromEntries(
+    Object.entries(finalArtifacts).map(([artifactName, finalArtifact]) => [
+      artifactName,
+      buildBaseTemplateContext(finalArtifact, resolvedTarget, repoModel.rootDirectory),
+    ]),
+  );
+  const artifactTemplateContexts = Object.fromEntries(
+    Object.entries(finalArtifacts).map(([artifactName, finalArtifact]) => [
+      artifactName,
+      buildTemplateContext(
+        artifactName,
+        finalArtifact,
+        resolvedTarget,
+        repoModel.rootDirectory,
+        baseTemplateContexts,
+      ),
+    ]),
+  );
+  for (const [alias, targets] of Object.entries(repoModel.aliases)) {
+    const targetArtifactName = targets[0];
+    if (targetArtifactName && artifactTemplateContexts[targetArtifactName]) {
+      artifactTemplateContexts[alias] = artifactTemplateContexts[targetArtifactName];
+    }
+  }
   const repoDeployExecutions = mergeExecutionGroups(repoModel.repoDeployExecutions, resolvedModel.RepoDeployExecutions);
   const steps = repoDeployExecutions[resolvedTarget] ?? [];
   const repoExecutions: RepoExecutionPlan[] = steps.map((step, index) => {
@@ -538,6 +569,7 @@ function materializeRepoDeployExecutions(
       blockedByPlanErrors,
       stepDiagnostics,
       [`repo-step:${name}`],
+      artifactTemplateContexts,
     );
 
     const status: ArtifactExecutionPlan["status"] = execution ? "runnable" : "partial";
@@ -761,6 +793,7 @@ function materializeExecutionRecord(
   blockedByPlanErrors: boolean,
   diagnostics: Diagnostic[],
   trace: string[],
+  lookupTemplateContexts?: Record<string, TemplateContext>,
 ): ExecutionSpec | null {
   if (blockedByPlanErrors || hasErrors(diagnostics)) {
     return null;
@@ -772,8 +805,16 @@ function materializeExecutionRecord(
     templateContext,
     diagnostics,
     "pluginPackage",
+    lookupTemplateContexts,
   );
-  const command = materializeTemplateString(executionRecord.command, artifactName, templateContext, diagnostics, "command");
+  const command = materializeTemplateString(
+    executionRecord.command,
+    artifactName,
+    templateContext,
+    diagnostics,
+    "command",
+    lookupTemplateContexts,
+  );
   if (!command) {
     if (!pluginPackage) {
       diagnostics.push(
@@ -783,9 +824,16 @@ function materializeExecutionRecord(
     }
   }
 
-  const args = materializeStringArray(executionRecord.args, artifactName, templateContext, diagnostics, "args");
-  const env = materializeStringMap(executionRecord.env, artifactName, templateContext, diagnostics, "env");
-  const cwdValue = materializeTemplateString(executionRecord.cwd, artifactName, templateContext, diagnostics, "cwd");
+  const args = materializeStringArray(executionRecord.args, artifactName, templateContext, diagnostics, "args", lookupTemplateContexts);
+  const env = materializeStringMap(executionRecord.env, artifactName, templateContext, diagnostics, "env", lookupTemplateContexts);
+  const cwdValue = materializeTemplateString(
+    executionRecord.cwd,
+    artifactName,
+    templateContext,
+    diagnostics,
+    "cwd",
+    lookupTemplateContexts,
+  );
 
   if (requirePluginPackage && !pluginPackage) {
     diagnostics.push(
@@ -904,13 +952,19 @@ function materializeTemplateString(
   templateContext: TemplateContext,
   diagnostics: Diagnostic[],
   fieldName: string,
+  lookupTemplateContexts?: Record<string, TemplateContext>,
 ): string | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
 
   const replaced = value.replace(/\{\{\s*(GetFinalRepoCloneFolderPathOf|GetFinalPortOf|GetFinalEnvMapNameOf|GetFinalEnvVarsAsJson)\((['"`])([^'"`]+)\2\)\s*\}\}/g, (_match, templateName: string, _quote: string, templateArtifactName: string) => {
-    if (templateArtifactName !== artifactName) {
+    const crossArtifactContext =
+      artifactName === "__repo__"
+        ? lookupTemplateContexts?.[templateArtifactName]
+        : undefined;
+
+    if (templateArtifactName !== artifactName && !crossArtifactContext) {
       diagnostics.push(
         createDiagnostic(
           "warning",
@@ -921,15 +975,17 @@ function materializeTemplateString(
       return "";
     }
 
+    const activeTemplateContext = crossArtifactContext ?? templateContext;
+
     switch (templateName) {
       case "GetFinalRepoCloneFolderPathOf":
-        return templateContext.repoCloneFolderPath ?? "";
+        return activeTemplateContext.repoCloneFolderPath ?? "";
       case "GetFinalPortOf":
-        return templateContext.port ?? "";
+        return activeTemplateContext.port ?? "";
       case "GetFinalEnvMapNameOf":
-        return templateContext.envMapName;
+        return activeTemplateContext.envMapName;
       case "GetFinalEnvVarsAsJson":
-        return templateContext.envVarsJson;
+        return activeTemplateContext.envVarsJson;
       default:
         return "";
     }
@@ -956,13 +1012,14 @@ function materializeStringArray(
   templateContext: TemplateContext,
   diagnostics: Diagnostic[],
   fieldName: string,
+  lookupTemplateContexts?: Record<string, TemplateContext>,
 ): string[] {
   if (!Array.isArray(value)) {
     return [];
   }
 
   return value
-    .map((entry) => materializeTemplateString(entry, artifactName, templateContext, diagnostics, fieldName))
+    .map((entry) => materializeTemplateString(entry, artifactName, templateContext, diagnostics, fieldName, lookupTemplateContexts))
     .filter((entry): entry is string => typeof entry === "string");
 }
 
@@ -972,6 +1029,7 @@ function materializeStringMap(
   templateContext: TemplateContext,
   diagnostics: Diagnostic[],
   fieldName: string,
+  lookupTemplateContexts?: Record<string, TemplateContext>,
 ): Record<string, string> {
   if (!isRecord(value)) {
     return {};
@@ -979,7 +1037,14 @@ function materializeStringMap(
 
   const result: Record<string, string> = {};
   for (const [key, entry] of Object.entries(value)) {
-    const materializedValue = materializeTemplateString(entry, artifactName, templateContext, diagnostics, `${fieldName}.${key}`);
+    const materializedValue = materializeTemplateString(
+      entry,
+      artifactName,
+      templateContext,
+      diagnostics,
+      `${fieldName}.${key}`,
+      lookupTemplateContexts,
+    );
     if (materializedValue !== undefined) {
       result[key] = materializedValue;
     }

@@ -328,6 +328,25 @@ function materializeArtifactExecutions(repoModel, resolvedModel, resolvedTarget,
 }
 function materializeRepoDeployExecutions(repoModel, resolvedModel, resolvedTarget, diagnostics) {
     const blockedByPlanErrors = (0, diagnostics_1.hasErrors)(diagnostics);
+    const resolvedArtifacts = normalizeNamedRecords(resolvedModel.Artifacts);
+    const finalArtifacts = Object.fromEntries(Object.entries(repoModel.artifacts).map(([artifactName, baseArtifact]) => [
+        artifactName,
+        deepMergeObjects(baseArtifact, resolvedArtifacts[artifactName] ?? {}),
+    ]));
+    const baseTemplateContexts = Object.fromEntries(Object.entries(finalArtifacts).map(([artifactName, finalArtifact]) => [
+        artifactName,
+        buildBaseTemplateContext(finalArtifact, resolvedTarget, repoModel.rootDirectory),
+    ]));
+    const artifactTemplateContexts = Object.fromEntries(Object.entries(finalArtifacts).map(([artifactName, finalArtifact]) => [
+        artifactName,
+        buildTemplateContext(artifactName, finalArtifact, resolvedTarget, repoModel.rootDirectory, baseTemplateContexts),
+    ]));
+    for (const [alias, targets] of Object.entries(repoModel.aliases)) {
+        const targetArtifactName = targets[0];
+        if (targetArtifactName && artifactTemplateContexts[targetArtifactName]) {
+            artifactTemplateContexts[alias] = artifactTemplateContexts[targetArtifactName];
+        }
+    }
     const repoDeployExecutions = mergeExecutionGroups(repoModel.repoDeployExecutions, resolvedModel.RepoDeployExecutions);
     const steps = repoDeployExecutions[resolvedTarget] ?? [];
     const repoExecutions = steps.map((step, index) => {
@@ -347,7 +366,7 @@ function materializeRepoDeployExecutions(repoModel, resolvedModel, resolvedTarge
         const execution = materializeExecutionRecord(name, "__repo__", executionRecord, step, repoModel.rootDirectory, {
             envMapName: resolvedTarget,
             envVarsJson: "{}",
-        }, false, blockedByPlanErrors, stepDiagnostics, [`repo-step:${name}`]);
+        }, false, blockedByPlanErrors, stepDiagnostics, [`repo-step:${name}`], artifactTemplateContexts);
         const status = execution ? "runnable" : "partial";
         return {
             name,
@@ -480,21 +499,21 @@ function mergeExecutionGroups(base, overrideValue) {
     }
     return merged;
 }
-function materializeExecutionRecord(runnerName, artifactName, executionRecord, runnerValue, repoRoot, templateContext, requirePluginPackage, blockedByPlanErrors, diagnostics, trace) {
+function materializeExecutionRecord(runnerName, artifactName, executionRecord, runnerValue, repoRoot, templateContext, requirePluginPackage, blockedByPlanErrors, diagnostics, trace, lookupTemplateContexts) {
     if (blockedByPlanErrors || (0, diagnostics_1.hasErrors)(diagnostics)) {
         return null;
     }
-    const pluginPackage = materializeTemplateString(readPluginPackage(executionRecord, runnerValue), artifactName, templateContext, diagnostics, "pluginPackage");
-    const command = materializeTemplateString(executionRecord.command, artifactName, templateContext, diagnostics, "command");
+    const pluginPackage = materializeTemplateString(readPluginPackage(executionRecord, runnerValue), artifactName, templateContext, diagnostics, "pluginPackage", lookupTemplateContexts);
+    const command = materializeTemplateString(executionRecord.command, artifactName, templateContext, diagnostics, "command", lookupTemplateContexts);
     if (!command) {
         if (!pluginPackage) {
             diagnostics.push((0, diagnostics_1.createDiagnostic)("warning", "execution-command-missing", `Runner "${runnerName}" is missing Execution.command.`));
             return null;
         }
     }
-    const args = materializeStringArray(executionRecord.args, artifactName, templateContext, diagnostics, "args");
-    const env = materializeStringMap(executionRecord.env, artifactName, templateContext, diagnostics, "env");
-    const cwdValue = materializeTemplateString(executionRecord.cwd, artifactName, templateContext, diagnostics, "cwd");
+    const args = materializeStringArray(executionRecord.args, artifactName, templateContext, diagnostics, "args", lookupTemplateContexts);
+    const env = materializeStringMap(executionRecord.env, artifactName, templateContext, diagnostics, "env", lookupTemplateContexts);
+    const cwdValue = materializeTemplateString(executionRecord.cwd, artifactName, templateContext, diagnostics, "cwd", lookupTemplateContexts);
     if (requirePluginPackage && !pluginPackage) {
         diagnostics.push((0, diagnostics_1.createDiagnostic)("warning", "plugin-package-missing", `Runner "${runnerName}" is missing Execution.pluginPackage.`));
         return null;
@@ -555,24 +574,28 @@ function buildTemplateContext(_artifactName, finalArtifact, resolvedTarget, repo
         envVarsJson: JSON.stringify(envVars),
     };
 }
-function materializeTemplateString(value, artifactName, templateContext, diagnostics, fieldName) {
+function materializeTemplateString(value, artifactName, templateContext, diagnostics, fieldName, lookupTemplateContexts) {
     if (typeof value !== "string") {
         return undefined;
     }
     const replaced = value.replace(/\{\{\s*(GetFinalRepoCloneFolderPathOf|GetFinalPortOf|GetFinalEnvMapNameOf|GetFinalEnvVarsAsJson)\((['"`])([^'"`]+)\2\)\s*\}\}/g, (_match, templateName, _quote, templateArtifactName) => {
-        if (templateArtifactName !== artifactName) {
+        const crossArtifactContext = artifactName === "__repo__"
+            ? lookupTemplateContexts?.[templateArtifactName]
+            : undefined;
+        if (templateArtifactName !== artifactName && !crossArtifactContext) {
             diagnostics.push((0, diagnostics_1.createDiagnostic)("warning", "artifact-template-mismatch", `Template references artifact "${templateArtifactName}" but runner is bound to "${artifactName}".`));
             return "";
         }
+        const activeTemplateContext = crossArtifactContext ?? templateContext;
         switch (templateName) {
             case "GetFinalRepoCloneFolderPathOf":
-                return templateContext.repoCloneFolderPath ?? "";
+                return activeTemplateContext.repoCloneFolderPath ?? "";
             case "GetFinalPortOf":
-                return templateContext.port ?? "";
+                return activeTemplateContext.port ?? "";
             case "GetFinalEnvMapNameOf":
-                return templateContext.envMapName;
+                return activeTemplateContext.envMapName;
             case "GetFinalEnvVarsAsJson":
-                return templateContext.envVarsJson;
+                return activeTemplateContext.envVarsJson;
             default:
                 return "";
         }
@@ -584,21 +607,21 @@ function materializeTemplateString(value, artifactName, templateContext, diagnos
     }
     return replaced.length > 0 ? replaced : undefined;
 }
-function materializeStringArray(value, artifactName, templateContext, diagnostics, fieldName) {
+function materializeStringArray(value, artifactName, templateContext, diagnostics, fieldName, lookupTemplateContexts) {
     if (!Array.isArray(value)) {
         return [];
     }
     return value
-        .map((entry) => materializeTemplateString(entry, artifactName, templateContext, diagnostics, fieldName))
+        .map((entry) => materializeTemplateString(entry, artifactName, templateContext, diagnostics, fieldName, lookupTemplateContexts))
         .filter((entry) => typeof entry === "string");
 }
-function materializeStringMap(value, artifactName, templateContext, diagnostics, fieldName) {
+function materializeStringMap(value, artifactName, templateContext, diagnostics, fieldName, lookupTemplateContexts) {
     if (!isRecord(value)) {
         return {};
     }
     const result = {};
     for (const [key, entry] of Object.entries(value)) {
-        const materializedValue = materializeTemplateString(entry, artifactName, templateContext, diagnostics, `${fieldName}.${key}`);
+        const materializedValue = materializeTemplateString(entry, artifactName, templateContext, diagnostics, `${fieldName}.${key}`, lookupTemplateContexts);
         if (materializedValue !== undefined) {
             result[key] = materializedValue;
         }

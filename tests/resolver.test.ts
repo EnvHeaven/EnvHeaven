@@ -208,6 +208,14 @@ test("materializes deploy local-01 with workspace steps and per-artifact local i
   assert.equal(plan.repoExecutions.length, 2);
   assert.deepEqual(plan.repoExecutions[0]?.execution?.args, ["install"]);
   assert.deepEqual(plan.repoExecutions[1]?.execution?.args, ["-r", "--if-present", "run", "build"]);
+  assert.match(
+    plan.repoExecutions[1]?.execution?.env.EH_OFFLINE_UI_ENV_JSON ?? "",
+    /"EH_DEPLOY_MODE":"local-global-install"/,
+  );
+  assert.match(
+    plan.repoExecutions[1]?.execution?.env.EH_OFFLINE_UI_ENV_JSON ?? "",
+    /"EH_ARTIFACT_VERSION":"dynamic-artifact-version"/,
+  );
   assert.equal(plan.artifactExecutions.filter((entry) => entry.status === "runnable").length, 3);
   assert.ok(
     plan.artifactExecutions.some(

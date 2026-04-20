@@ -889,10 +889,14 @@ async function executeDeployPlan(plan, runtimeContext, diagnostics, stateStore, 
     const artifactResults = [];
     const deploySummary = [];
     let exitCode = 0;
+    const artifactVersionMap = await buildArtifactVersionMap(plan.artifactExecutions, runtimeContext.repoRoot, diagnostics, stateStore, aliases);
     for (const repoExecution of plan.repoExecutions) {
         (0, cli_output_1.verboseLog)(`deploy step start: ${repoExecution.name}`, options);
         const filteredExecution = (0, plan_filter_1.applyPnpmRecursiveFilter)(repoExecution.execution, plan.artifactExecutions, plan.selectedArtifacts);
-        const result = await executePlanItem(repoExecution.name, filteredExecution, runtimeContext, diagnostics);
+        const hydratedRepoExecution = filteredExecution
+            ? (0, dynamic_version_1.materializeDynamicVersionExecution)(filteredExecution, "__repo__", "", artifactVersionMap)
+            : null;
+        const result = await executePlanItem(repoExecution.name, hydratedRepoExecution, runtimeContext, diagnostics, "deploy", plan.resolvedTarget);
         (0, cli_output_1.verboseLog)(`deploy step done: ${repoExecution.name} (exit ${String(result["exitCode"] ?? 0)})`, options);
         repoResults.push({ name: repoExecution.name, status: repoExecution.status, result });
         if ((result.exitCode ?? 0) !== 0) {
@@ -900,7 +904,6 @@ async function executeDeployPlan(plan, runtimeContext, diagnostics, stateStore, 
             return { exitCode, payload: { repoExecutions: repoResults, artifactExecutions: artifactResults }, deploySummary };
         }
     }
-    const artifactVersionMap = await buildArtifactVersionMap(plan.artifactExecutions, runtimeContext.repoRoot, diagnostics, stateStore, aliases);
     for (const artifactExecution of plan.artifactExecutions) {
         (0, cli_output_1.verboseLog)(`deploy step start: ${artifactExecution.runnerName}`, options);
         const existingRecord = await stateStore.getVersionRecord(runtimeContext.repoRoot, artifactExecution.artifactName, artifactExecution.packageName);
@@ -997,7 +1000,7 @@ async function executeArtifactDeploy(artifactExecution, hydratedExecution, hydra
         ? node_path_1.default.resolve(runtimeContext.repoRoot, artifactExecution.repoCloneFolderPath)
         : hydratedExecution.cwd;
     if (!needsVersionedInstall || !packageDirectory) {
-        const result = await executePlanItem(artifactExecution.runnerName, hydratedExecution, runtimeContext, diagnostics);
+        const result = await executePlanItem(artifactExecution.runnerName, hydratedExecution, runtimeContext, diagnostics, "deploy", deployTarget);
         return {
             exitCode: result.exitCode ?? 1,
             payload: {
@@ -1026,7 +1029,7 @@ async function executeArtifactDeploy(artifactExecution, hydratedExecution, hydra
                 return arg;
             });
             const tarballExecution = { ...executionToRun, args: tarballArgs };
-            result = await executePlanItem(artifactExecution.runnerName, tarballExecution, runtimeContext, diagnostics);
+            result = await executePlanItem(artifactExecution.runnerName, tarballExecution, runtimeContext, diagnostics, "deploy", deployTarget);
         }
         finally {
             await staged.cleanup();
@@ -1034,7 +1037,7 @@ async function executeArtifactDeploy(artifactExecution, hydratedExecution, hydra
     }
     else {
         result = await (0, runtime_1.withTemporaryPackageVersion)(packageDirectory, resolvedVersionValue, async () => {
-            return await executePlanItem(artifactExecution.runnerName, executionToRun, runtimeContext, diagnostics);
+            return await executePlanItem(artifactExecution.runnerName, executionToRun, runtimeContext, diagnostics, "deploy", deployTarget);
         });
     }
     const payload = {
@@ -1062,7 +1065,7 @@ async function executeArtifactDeploy(artifactExecution, hydratedExecution, hydra
     }
     return { exitCode: result.exitCode ?? 1, payload };
 }
-async function executePlanItem(name, execution, runtimeContext, diagnostics) {
+async function executePlanItem(name, execution, runtimeContext, diagnostics, kind = "run", resolvedTarget = "default") {
     if (!execution)
         return { skipped: true, exitCode: 0 };
     if (execution.pluginPackage) {
@@ -1079,9 +1082,9 @@ async function executePlanItem(name, execution, runtimeContext, diagnostics) {
                 return { exitCode: 1 };
             }
             const executed = await loadedPlugin.plugin.execute({
-                kind: "run",
-                requestedTarget: "default",
-                resolvedTarget: "default",
+                kind,
+                requestedTarget: resolvedTarget,
+                resolvedTarget,
                 targetResolutionTrace: [],
                 mergeOrder: [],
                 selectedArtifacts: [],

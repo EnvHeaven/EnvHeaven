@@ -841,7 +841,7 @@ async function main(): Promise<void> {
   if (intent.kind === "deploy") {
     const challengeRequirement = buildChallengeFromResolvedModel(
       plan.resolvedModel,
-      plan.resolvedTarget,
+      plan.resolvedTarget as SupportedTarget,
     );
 
     if (challengeRequirement && !hasErrors(diagnostics)) {
@@ -1125,19 +1125,6 @@ async function executeDeployPlan(
   const artifactResults: Array<Record<string, unknown>> = [];
   const deploySummary: DeploySummaryEntry[] = [];
   let exitCode = 0;
-
-  for (const repoExecution of plan.repoExecutions) {
-    verboseLog(`deploy step start: ${repoExecution.name}`, options);
-    const filteredExecution = applyPnpmRecursiveFilter(repoExecution.execution, plan.artifactExecutions, plan.selectedArtifacts);
-    const result = await executePlanItem(repoExecution.name, filteredExecution, runtimeContext, diagnostics);
-    verboseLog(`deploy step done: ${repoExecution.name} (exit ${String(result["exitCode"] ?? 0)})`, options);
-    repoResults.push({ name: repoExecution.name, status: repoExecution.status, result });
-    if ((result.exitCode ?? 0) !== 0) {
-      exitCode = result.exitCode as number;
-      return { exitCode, payload: { repoExecutions: repoResults, artifactExecutions: artifactResults }, deploySummary };
-    }
-  }
-
   const artifactVersionMap = await buildArtifactVersionMap(
     plan.artifactExecutions,
     runtimeContext.repoRoot,
@@ -1145,6 +1132,28 @@ async function executeDeployPlan(
     stateStore,
     aliases,
   );
+
+  for (const repoExecution of plan.repoExecutions) {
+    verboseLog(`deploy step start: ${repoExecution.name}`, options);
+    const filteredExecution = applyPnpmRecursiveFilter(repoExecution.execution, plan.artifactExecutions, plan.selectedArtifacts);
+    const hydratedRepoExecution = filteredExecution
+      ? materializeDynamicVersionExecution(filteredExecution, "__repo__", "", artifactVersionMap)
+      : null;
+    const result = await executePlanItem(
+      repoExecution.name,
+      hydratedRepoExecution,
+      runtimeContext,
+      diagnostics,
+      "deploy",
+      plan.resolvedTarget as SupportedTarget,
+    );
+    verboseLog(`deploy step done: ${repoExecution.name} (exit ${String(result["exitCode"] ?? 0)})`, options);
+    repoResults.push({ name: repoExecution.name, status: repoExecution.status, result });
+    if ((result.exitCode ?? 0) !== 0) {
+      exitCode = result.exitCode as number;
+      return { exitCode, payload: { repoExecutions: repoResults, artifactExecutions: artifactResults }, deploySummary };
+    }
+  }
 
   for (const artifactExecution of plan.artifactExecutions) {
     verboseLog(`deploy step start: ${artifactExecution.runnerName}`, options);
@@ -1330,7 +1339,14 @@ async function executeArtifactDeploy(
     : hydratedExecution.cwd;
 
   if (!needsVersionedInstall || !packageDirectory) {
-    const result = await executePlanItem(artifactExecution.runnerName, hydratedExecution, runtimeContext, diagnostics);
+    const result = await executePlanItem(
+      artifactExecution.runnerName,
+      hydratedExecution,
+      runtimeContext,
+      diagnostics,
+      "deploy",
+      deployTarget as SupportedTarget,
+    );
     return {
       exitCode: (result.exitCode as number) ?? 1,
       payload: {
@@ -1363,13 +1379,27 @@ async function executeArtifactDeploy(
         return arg;
       });
       const tarballExecution: ExecutionSpec = { ...executionToRun, args: tarballArgs };
-      result = await executePlanItem(artifactExecution.runnerName, tarballExecution, runtimeContext, diagnostics);
+      result = await executePlanItem(
+        artifactExecution.runnerName,
+        tarballExecution,
+        runtimeContext,
+        diagnostics,
+        "deploy",
+        deployTarget as SupportedTarget,
+      );
     } finally {
       await staged.cleanup();
     }
   } else {
     result = await withTemporaryPackageVersion(packageDirectory, resolvedVersionValue, async () => {
-      return await executePlanItem(artifactExecution.runnerName, executionToRun, runtimeContext, diagnostics);
+      return await executePlanItem(
+        artifactExecution.runnerName,
+        executionToRun,
+        runtimeContext,
+        diagnostics,
+        "deploy",
+        deployTarget as SupportedTarget,
+      );
     });
   }
 
@@ -1419,6 +1449,8 @@ async function executePlanItem(
   execution: ExecutionSpec | null,
   runtimeContext: PluginRuntimeContext,
   diagnostics: Diagnostic[],
+  kind: "run" | "deploy" = "run",
+  resolvedTarget: SupportedTarget = "default",
 ): Promise<Record<string, unknown>> {
   if (!execution) return { skipped: true, exitCode: 0 };
 
@@ -1440,9 +1472,9 @@ async function executePlanItem(
 
       const executed = await loadedPlugin.plugin.execute(
         {
-          kind: "run",
-          requestedTarget: "default",
-          resolvedTarget: "default",
+          kind,
+          requestedTarget: resolvedTarget,
+          resolvedTarget,
           targetResolutionTrace: [],
           mergeOrder: [],
           selectedArtifacts: [],
