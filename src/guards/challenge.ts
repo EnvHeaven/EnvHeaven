@@ -1,4 +1,5 @@
 import * as readline from "node:readline";
+import type { Readable, Writable } from "node:stream";
 import { createDiagnostic } from "../diagnostics";
 import type { Diagnostic } from "../types";
 
@@ -116,7 +117,7 @@ export async function executeCliChallenge(
       `  Type "${requirement.phrase}" to continue: `,
   );
 
-  const answer = await readLineFromStdin();
+  const answer = await readLineFromStreams();
   const trimmed = answer.trim();
 
   if (trimmed === requirement.phrase) {
@@ -180,18 +181,31 @@ export function validateWebUiChallengeResponse(
   return { passed: false, diagnostics, requirement };
 }
 
-function readLineFromStdin(): Promise<string> {
+export function readLineFromStreams(
+  input: Readable = process.stdin,
+  output: Writable = process.stdout,
+): Promise<string> {
   return new Promise((resolve) => {
     const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
+      input,
+      output,
     });
+    let settled = false;
+
+    const settle = (value: string): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(value);
+    };
+
     rl.once("line", (line) => {
+      settle(line);
       rl.close();
-      resolve(line);
     });
     rl.once("close", () => {
-      resolve("");
+      settle("");
     });
   });
 }

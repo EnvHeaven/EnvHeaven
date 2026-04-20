@@ -1,9 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { PassThrough } from "node:stream";
 import {
   buildChallengeRequirement,
   buildChallengeFromResolvedModel,
   buildWebUiChallengePayload,
+  readLineFromStreams,
   validateWebUiChallengeResponse,
 } from "../src/guards/challenge";
 
@@ -171,5 +173,18 @@ describe("buildWebUiChallengePayload", () => {
     assert.strictEqual(payload["phrase"], "production-321");
     assert.strictEqual(payload["reason"], "Deploying to production.");
     assert.ok(typeof payload["instructions"] === "string");
+  });
+});
+
+describe("readLineFromStreams", () => {
+  it("returns the typed line instead of the close fallback", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const promise = readLineFromStreams(input, output);
+
+    input.write("development-531\n");
+
+    const result = await promise;
+    assert.strictEqual(result, "development-531");
   });
 });

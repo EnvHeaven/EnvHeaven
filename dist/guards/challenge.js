@@ -39,6 +39,7 @@ exports.buildChallengeFromResolvedModel = buildChallengeFromResolvedModel;
 exports.executeCliChallenge = executeCliChallenge;
 exports.buildWebUiChallengePayload = buildWebUiChallengePayload;
 exports.validateWebUiChallengeResponse = validateWebUiChallengeResponse;
+exports.readLineFromStreams = readLineFromStreams;
 const readline = __importStar(require("node:readline"));
 const diagnostics_1 = require("../diagnostics");
 const LOCAL_TARGETS = new Set([
@@ -103,7 +104,7 @@ async function executeCliChallenge(requirement) {
         `  ╰─────────────────────────────────────────────╯\n\n` +
         `  ${requirement.reason}\n\n` +
         `  Type "${requirement.phrase}" to continue: `);
-    const answer = await readLineFromStdin();
+    const answer = await readLineFromStreams();
     const trimmed = answer.trim();
     if (trimmed === requirement.phrase) {
         diagnostics.push((0, diagnostics_1.createDiagnostic)("info", "challenge-passed", `Challenge confirmed for target "${requirement.targetName}".`));
@@ -131,18 +132,26 @@ function validateWebUiChallengeResponse(requirement, response) {
     diagnostics.push((0, diagnostics_1.createDiagnostic)("error", "challenge-failed", `Challenge response "${trimmed}" does not match expected "${requirement.phrase}". Deploy aborted.`));
     return { passed: false, diagnostics, requirement };
 }
-function readLineFromStdin() {
+function readLineFromStreams(input = process.stdin, output = process.stdout) {
     return new Promise((resolve) => {
         const rl = readline.createInterface({
-            input: process.stdin,
-            output: process.stdout,
+            input,
+            output,
         });
+        let settled = false;
+        const settle = (value) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            resolve(value);
+        };
         rl.once("line", (line) => {
+            settle(line);
             rl.close();
-            resolve(line);
         });
         rl.once("close", () => {
-            resolve("");
+            settle("");
         });
     });
 }
