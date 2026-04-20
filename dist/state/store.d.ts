@@ -10,7 +10,13 @@ export interface ArtifactVersionRecord {
     packageName?: string;
     lastVersion?: string;
     nextVersion?: string;
+    tracks?: Partial<Record<PersistedVersionTrack, ArtifactVersionTrackState>>;
     updatedAt: string;
+}
+export interface ArtifactVersionTrackState {
+    lastVersion?: string;
+    nextVersion?: string;
+    updatedAt?: string;
 }
 export interface RepoStateRecord {
     repoId: string;
@@ -29,6 +35,8 @@ export interface ResolvedArtifactVersion {
     source: "registry-next" | "registry-last" | "fallback";
     record?: ArtifactVersionRecord;
 }
+export type VersionTrack = "patch" | "minor" | "exp" | "beta";
+export type PersistedVersionTrack = "release" | "exp" | "beta";
 export declare class EnvHeavenStateStore {
     private readonly paths;
     private cache;
@@ -42,15 +50,17 @@ export declare class EnvHeavenStateStore {
     getVersionRecords(repoRoot: string): Promise<ArtifactVersionRecord[]>;
     getVersionRecord(repoRoot: string, artifactName: string, packageName?: string): Promise<ArtifactVersionRecord | null>;
     setArtifactVersion(repoRoot: string, artifactName: string, packageName: string | undefined, updates: Partial<Pick<ArtifactVersionRecord, "lastVersion" | "nextVersion">>): Promise<ArtifactVersionRecord>;
+    setArtifactTrackVersion(repoRoot: string, artifactName: string, packageName: string | undefined, track: PersistedVersionTrack, updates: Partial<Pick<ArtifactVersionTrackState, "lastVersion" | "nextVersion">>): Promise<ArtifactVersionRecord>;
     incrementArtifactNextVersion(repoRoot: string, artifactName: string, packageName: string | undefined, fallbackVersion?: string): Promise<ArtifactVersionRecord>;
     resolveArtifactVersion(repoRoot: string, artifactName: string, packageName: string | undefined, fallbackVersion: string): Promise<ResolvedArtifactVersion>;
-    bootstrapArtifactVersion(repoRoot: string, artifactName: string, packageName: string | undefined, packageJsonVersion: string): Promise<{
+    bootstrapArtifactVersion(repoRoot: string, artifactName: string, packageName: string | undefined, packageJsonVersion: string, track?: VersionTrack): Promise<{
         record: ArtifactVersionRecord;
         bootstrapped: boolean;
     }>;
     incrementArtifactExpVersion(repoRoot: string, artifactName: string, packageName: string | undefined, fallbackVersion?: string): Promise<ArtifactVersionRecord>;
     incrementArtifactMinorVersion(repoRoot: string, artifactName: string, packageName: string | undefined, fallbackVersion?: string): Promise<ArtifactVersionRecord>;
-    advanceArtifactVersion(repoRoot: string, artifactName: string, packageName: string | undefined, deployedVersion: string, deployTarget?: string): Promise<ArtifactVersionRecord>;
+    advanceArtifactVersion(repoRoot: string, artifactName: string, packageName: string | undefined, deployedVersion: string, track?: VersionTrack): Promise<ArtifactVersionRecord>;
+    private setReleaseTrackVersion;
     private ensureRepo;
     private requireRepo;
     private loadState;
@@ -62,13 +72,27 @@ export declare function resolveEnvHeavenPaths(platform: NodeJS.Platform, env: No
 export declare function buildRepoId(repoRoot: string): string;
 export declare function buildArtifactKey(artifactName: string, packageName?: string): string;
 export declare function incrementPatchVersion(version: string): string;
+export declare function decrementPatchVersion(version: string): string | undefined;
 export declare function incrementMinorVersion(version: string): string;
 export declare function incrementExpVersion(version: string): string;
+export declare function incrementBetaVersion(version: string): string;
 export declare function parseExpVersion(value: string): {
     major: number;
     minor: number;
     patch: number;
     exp: number;
 } | null;
+export declare function parseBetaVersion(value: string): {
+    major: number;
+    minor: number;
+    patch: number;
+    beta: number;
+} | null;
 export declare function isValidVersionString(value: string): boolean;
 export declare function isValidExpVersionString(value: string): boolean;
+export declare function normalizeArtifactVersionRecord(record: ArtifactVersionRecord): ArtifactVersionRecord;
+export declare function getTrackState(record: ArtifactVersionRecord | null | undefined, track: PersistedVersionTrack): ArtifactVersionTrackState | undefined;
+export declare function toPersistedTrack(track: VersionTrack): PersistedVersionTrack;
+export declare function isVersionTrack(value: string): value is VersionTrack;
+export declare function versionMatchesTrack(version: string, track: VersionTrack): boolean;
+export declare function incrementVersionForTrack(version: string, track: VersionTrack): string;

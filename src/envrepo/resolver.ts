@@ -475,11 +475,11 @@ function materializeArtifactExecutions(
 
     if (materializedExecution) {
       const layerEnvVars = materializeArtifactEnvVars(
-        normalizeStringMap(finalArtifact.EnvVars ?? finalArtifact.envVars),
+        normalizeScalarMap(finalArtifact.EnvVars ?? finalArtifact.envVars),
         baseTemplateContexts,
       );
       if (Object.keys(layerEnvVars).length > 0) {
-        materializedExecution.env = { ...layerEnvVars, ...materializedExecution.env };
+        materializedExecution.env = { ...stringifyEnvVarMap(layerEnvVars), ...materializedExecution.env };
       }
     }
 
@@ -713,11 +713,11 @@ function materializeArtifactDistributors(
 
     if (execution) {
       const layerEnvVars = materializeArtifactEnvVars(
-        normalizeStringMap(finalArtifact.EnvVars ?? finalArtifact.envVars),
+        normalizeScalarMap(finalArtifact.EnvVars ?? finalArtifact.envVars),
         baseTemplateContexts,
       );
       if (Object.keys(layerEnvVars).length > 0) {
-        execution.env = { ...layerEnvVars, ...execution.env };
+        execution.env = { ...stringifyEnvVarMap(layerEnvVars), ...execution.env };
       }
     }
 
@@ -872,6 +872,8 @@ interface BaseTemplateContext {
   envMapName: string;
 }
 
+type EnvVarScalar = string | boolean | number;
+
 function buildBaseTemplateContext(
   finalArtifact: Record<string, unknown>,
   resolvedTarget: string,
@@ -892,35 +894,37 @@ function buildBaseTemplateContext(
 }
 
 function materializeArtifactEnvVars(
-  envVars: Record<string, string>,
+  envVars: Record<string, EnvVarScalar>,
   baseTemplateContexts: Record<string, BaseTemplateContext>,
-): Record<string, string> {
+): Record<string, EnvVarScalar> {
   const finalValuePattern =
     /\{\{\s*(GetFinalRepoCloneFolderPathOf|GetFinalPortOf|GetFinalEnvMapNameOf)\((['"`])([^'"`]+)\2\)\s*\}\}/g;
 
   return Object.fromEntries(
     Object.entries(envVars).map(([key, value]) => [
       key,
-      value.replace(
-        finalValuePattern,
-        (_match, templateName: string, _quote: string, templateArtifactName: string) => {
-          const templateContext = baseTemplateContexts[templateArtifactName];
-          if (!templateContext) {
-            return "";
-          }
+      typeof value === "string"
+        ? value.replace(
+            finalValuePattern,
+            (_match, templateName: string, _quote: string, templateArtifactName: string) => {
+              const templateContext = baseTemplateContexts[templateArtifactName];
+              if (!templateContext) {
+                return "";
+              }
 
-          switch (templateName) {
-            case "GetFinalRepoCloneFolderPathOf":
-              return templateContext.repoCloneFolderPath ?? "";
-            case "GetFinalPortOf":
-              return templateContext.port ?? "";
-            case "GetFinalEnvMapNameOf":
-              return templateContext.envMapName;
-            default:
-              return "";
-          }
-        },
-      ),
+              switch (templateName) {
+                case "GetFinalRepoCloneFolderPathOf":
+                  return templateContext.repoCloneFolderPath ?? "";
+                case "GetFinalPortOf":
+                  return templateContext.port ?? "";
+                case "GetFinalEnvMapNameOf":
+                  return templateContext.envMapName;
+                default:
+                  return "";
+              }
+            },
+          )
+        : value,
     ]),
   );
 }
@@ -934,7 +938,7 @@ function buildTemplateContext(
 ): TemplateContext {
   const baseTemplateContext = buildBaseTemplateContext(finalArtifact, resolvedTarget, repoRoot);
   const envVars = materializeArtifactEnvVars(
-    normalizeStringMap(finalArtifact.EnvVars ?? finalArtifact.envVars),
+    normalizeScalarMap(finalArtifact.EnvVars ?? finalArtifact.envVars),
     baseTemplateContexts,
   );
 
@@ -1172,6 +1176,27 @@ function normalizeStringMap(value: unknown): Record<string, string> {
   }
 
   return result;
+}
+
+function normalizeScalarMap(value: unknown): Record<string, EnvVarScalar> {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  const result: Record<string, EnvVarScalar> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === "string" || typeof entry === "boolean" || typeof entry === "number") {
+      result[key] = entry;
+    }
+  }
+
+  return result;
+}
+
+function stringifyEnvVarMap(value: Record<string, EnvVarScalar>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [key, String(entry)]),
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

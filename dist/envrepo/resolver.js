@@ -309,9 +309,9 @@ function materializeArtifactExecutions(repoModel, resolvedModel, resolvedTarget,
         }
         const materializedExecution = materializeExecutionRecord(runnerName, artifactName, executionRecord, runnerValue, repoModel.rootDirectory, templateContext, false, blockedByPlanErrors, artifactDiagnostics, materializationTrace);
         if (materializedExecution) {
-            const layerEnvVars = materializeArtifactEnvVars(normalizeStringMap(finalArtifact.EnvVars ?? finalArtifact.envVars), baseTemplateContexts);
+            const layerEnvVars = materializeArtifactEnvVars(normalizeScalarMap(finalArtifact.EnvVars ?? finalArtifact.envVars), baseTemplateContexts);
             if (Object.keys(layerEnvVars).length > 0) {
-                materializedExecution.env = { ...layerEnvVars, ...materializedExecution.env };
+                materializedExecution.env = { ...stringifyEnvVarMap(layerEnvVars), ...materializedExecution.env };
             }
         }
         artifactExecutions.push({
@@ -456,9 +456,9 @@ function materializeArtifactDistributors(repoModel, resolvedModel, resolvedTarge
         }
         const execution = materializeExecutionRecord(distributorName, artifactName, executionRecord, distributorValue, repoModel.rootDirectory, buildTemplateContext(artifactName, finalArtifact, resolvedTarget, repoModel.rootDirectory, baseTemplateContexts), false, blockedByPlanErrors, artifactDiagnostics, trace);
         if (execution) {
-            const layerEnvVars = materializeArtifactEnvVars(normalizeStringMap(finalArtifact.EnvVars ?? finalArtifact.envVars), baseTemplateContexts);
+            const layerEnvVars = materializeArtifactEnvVars(normalizeScalarMap(finalArtifact.EnvVars ?? finalArtifact.envVars), baseTemplateContexts);
             if (Object.keys(layerEnvVars).length > 0) {
-                execution.env = { ...layerEnvVars, ...execution.env };
+                execution.env = { ...stringifyEnvVarMap(layerEnvVars), ...execution.env };
             }
         }
         const status = execution ? "runnable" : "partial";
@@ -546,27 +546,29 @@ function materializeArtifactEnvVars(envVars, baseTemplateContexts) {
     const finalValuePattern = /\{\{\s*(GetFinalRepoCloneFolderPathOf|GetFinalPortOf|GetFinalEnvMapNameOf)\((['"`])([^'"`]+)\2\)\s*\}\}/g;
     return Object.fromEntries(Object.entries(envVars).map(([key, value]) => [
         key,
-        value.replace(finalValuePattern, (_match, templateName, _quote, templateArtifactName) => {
-            const templateContext = baseTemplateContexts[templateArtifactName];
-            if (!templateContext) {
-                return "";
-            }
-            switch (templateName) {
-                case "GetFinalRepoCloneFolderPathOf":
-                    return templateContext.repoCloneFolderPath ?? "";
-                case "GetFinalPortOf":
-                    return templateContext.port ?? "";
-                case "GetFinalEnvMapNameOf":
-                    return templateContext.envMapName;
-                default:
+        typeof value === "string"
+            ? value.replace(finalValuePattern, (_match, templateName, _quote, templateArtifactName) => {
+                const templateContext = baseTemplateContexts[templateArtifactName];
+                if (!templateContext) {
                     return "";
-            }
-        }),
+                }
+                switch (templateName) {
+                    case "GetFinalRepoCloneFolderPathOf":
+                        return templateContext.repoCloneFolderPath ?? "";
+                    case "GetFinalPortOf":
+                        return templateContext.port ?? "";
+                    case "GetFinalEnvMapNameOf":
+                        return templateContext.envMapName;
+                    default:
+                        return "";
+                }
+            })
+            : value,
     ]));
 }
 function buildTemplateContext(_artifactName, finalArtifact, resolvedTarget, repoRoot, baseTemplateContexts) {
     const baseTemplateContext = buildBaseTemplateContext(finalArtifact, resolvedTarget, repoRoot);
-    const envVars = materializeArtifactEnvVars(normalizeStringMap(finalArtifact.EnvVars ?? finalArtifact.envVars), baseTemplateContexts);
+    const envVars = materializeArtifactEnvVars(normalizeScalarMap(finalArtifact.EnvVars ?? finalArtifact.envVars), baseTemplateContexts);
     return {
         repoCloneFolderPath: baseTemplateContext.repoCloneFolderPath,
         port: baseTemplateContext.port,
@@ -722,6 +724,21 @@ function normalizeStringMap(value) {
         }
     }
     return result;
+}
+function normalizeScalarMap(value) {
+    if (!isRecord(value)) {
+        return {};
+    }
+    const result = {};
+    for (const [key, entry] of Object.entries(value)) {
+        if (typeof entry === "string" || typeof entry === "boolean" || typeof entry === "number") {
+            result[key] = entry;
+        }
+    }
+    return result;
+}
+function stringifyEnvVarMap(value) {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, String(entry)]));
 }
 function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);

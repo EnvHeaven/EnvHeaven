@@ -8,11 +8,20 @@ exports.resolveEnvHeavenPaths = resolveEnvHeavenPaths;
 exports.buildRepoId = buildRepoId;
 exports.buildArtifactKey = buildArtifactKey;
 exports.incrementPatchVersion = incrementPatchVersion;
+exports.decrementPatchVersion = decrementPatchVersion;
 exports.incrementMinorVersion = incrementMinorVersion;
 exports.incrementExpVersion = incrementExpVersion;
+exports.incrementBetaVersion = incrementBetaVersion;
 exports.parseExpVersion = parseExpVersion;
+exports.parseBetaVersion = parseBetaVersion;
 exports.isValidVersionString = isValidVersionString;
 exports.isValidExpVersionString = isValidExpVersionString;
+exports.normalizeArtifactVersionRecord = normalizeArtifactVersionRecord;
+exports.getTrackState = getTrackState;
+exports.toPersistedTrack = toPersistedTrack;
+exports.isVersionTrack = isVersionTrack;
+exports.versionMatchesTrack = versionMatchesTrack;
+exports.incrementVersionForTrack = incrementVersionForTrack;
 const node_crypto_1 = require("node:crypto");
 const node_fs_1 = require("node:fs");
 const node_os_1 = __importDefault(require("node:os"));
@@ -76,23 +85,25 @@ class EnvHeavenStateStore {
     }
     async getVersionRecord(repoRoot, artifactName, packageName) {
         const repoRecord = await this.ensureRepo(repoRoot);
-        return repoRecord.artifacts[buildArtifactKey(artifactName, packageName)] ?? null;
+        const record = repoRecord.artifacts[buildArtifactKey(artifactName, packageName)] ?? null;
+        return record ? normalizeArtifactVersionRecord(record) : null;
     }
     async setArtifactVersion(repoRoot, artifactName, packageName, updates) {
+        return await this.setArtifactTrackVersion(repoRoot, artifactName, packageName, "release", updates);
+    }
+    async setArtifactTrackVersion(repoRoot, artifactName, packageName, track, updates) {
         // Force reload from disk on every write so that concurrent processes
         // (e.g. daemon and CLI running simultaneously) do not overwrite each
         // other's state with a stale in-memory cache.
         const state = await this.loadState(true);
         const repoRecord = await this.requireRepo(state, repoRoot);
         const recordKey = buildArtifactKey(artifactName, packageName);
-        const existing = repoRecord.artifacts[recordKey];
-        const nextRecord = {
+        const existing = normalizeArtifactVersionRecord(repoRecord.artifacts[recordKey] ?? {
             artifactName,
             packageName,
-            lastVersion: updates.lastVersion ?? existing?.lastVersion,
-            nextVersion: updates.nextVersion ?? existing?.nextVersion,
-            updatedAt: new Date().toISOString(),
-        };
+            updatedAt: new Date(0).toISOString(),
+        });
+        const nextRecord = withTrackUpdates(existing, track, updates);
         repoRecord.artifacts[recordKey] = nextRecord;
         repoRecord.updatedAt = nextRecord.updatedAt;
         await this.saveState(state);
@@ -100,27 +111,29 @@ class EnvHeavenStateStore {
     }
     async incrementArtifactNextVersion(repoRoot, artifactName, packageName, fallbackVersion) {
         const existing = await this.getVersionRecord(repoRoot, artifactName, packageName);
-        const baseVersion = existing?.nextVersion ?? existing?.lastVersion ?? fallbackVersion ?? "0.1.0";
+        const releaseState = getTrackState(existing, "release");
+        const baseVersion = releaseState?.nextVersion ?? releaseState?.lastVersion ?? fallbackVersion ?? "0.1.0";
         const nextVersion = incrementPatchVersion(baseVersion);
-        return await this.setArtifactVersion(repoRoot, artifactName, packageName, {
-            lastVersion: existing?.lastVersion,
+        return await this.setReleaseTrackVersion(repoRoot, artifactName, packageName, {
+            lastVersion: releaseState?.lastVersion,
             nextVersion,
         });
     }
     async resolveArtifactVersion(repoRoot, artifactName, packageName, fallbackVersion) {
         const record = await this.getVersionRecord(repoRoot, artifactName, packageName);
-        if (record?.nextVersion) {
+        const releaseState = getTrackState(record, "release");
+        if (releaseState?.nextVersion) {
             return {
-                value: record.nextVersion,
+                value: releaseState.nextVersion,
                 source: "registry-next",
-                record,
+                record: record ?? undefined,
             };
         }
-        if (record?.lastVersion) {
+        if (releaseState?.lastVersion) {
             return {
-                value: record.lastVersion,
+                value: releaseState.lastVersion,
                 source: "registry-last",
-                record,
+                record: record ?? undefined,
             };
         }
         return {
@@ -128,42 +141,86 @@ class EnvHeavenStateStore {
             source: "fallback",
         };
     }
-    async bootstrapArtifactVersion(repoRoot, artifactName, packageName, packageJsonVersion) {
+    async bootstrapArtifactVersion(repoRoot, artifactName, packageName, packageJsonVersion, track = "patch") {
         const existing = await this.getVersionRecord(repoRoot, artifactName, packageName);
-        if (existing?.nextVersion || existing?.lastVersion) {
+        const persistedTrack = toPersistedTrack(track);
+        const trackState = getTrackState(existing, persistedTrack);
+        if (trackState?.nextVersion || trackState?.lastVersion) {
             return { record: existing, bootstrapped: false };
         }
-        const nextVersion = incrementPatchVersion(packageJsonVersion);
-        const record = await this.setArtifactVersion(repoRoot, artifactName, packageName, { nextVersion });
+        let record = existing;
+        const releaseState = getTrackState(existing, "release");
+        const releaseNext = releaseState?.nextVersion ??
+            releaseState?.lastVersion ??
+            incrementPatchVersion(packageJsonVersion);
+        if (!releaseState?.nextVersion && !releaseState?.lastVersion) {
+            record = await this.setReleaseTrackVersion(repoRoot, artifactName, packageName, {
+                nextVersion: releaseNext,
+            });
+        }
+        const nextVersion = persistedTrack === "release"
+            ? incrementVersionForTrack(packageJsonVersion, track)
+            : derivePrereleaseFromReleaseBase(releaseNext, persistedTrack);
+        record = await this.setArtifactTrackVersion(repoRoot, artifactName, packageName, persistedTrack, { nextVersion });
         return { record, bootstrapped: true };
     }
     async incrementArtifactExpVersion(repoRoot, artifactName, packageName, fallbackVersion) {
         const existing = await this.getVersionRecord(repoRoot, artifactName, packageName);
-        const baseVersion = existing?.nextVersion ?? existing?.lastVersion ?? fallbackVersion ?? "0.1.0";
-        const nextVersion = incrementExpVersion(baseVersion);
-        return await this.setArtifactVersion(repoRoot, artifactName, packageName, {
-            lastVersion: existing?.lastVersion,
+        const expState = getTrackState(existing, "exp");
+        const releaseState = getTrackState(existing, "release");
+        const baseVersion = expState?.nextVersion ??
+            expState?.lastVersion ??
+            releaseState?.nextVersion ??
+            releaseState?.lastVersion ??
+            fallbackVersion ??
+            "0.1.0";
+        const nextVersion = expState?.nextVersion || expState?.lastVersion
+            ? incrementExpVersion(baseVersion)
+            : derivePrereleaseFromReleaseBase(baseVersion, "exp");
+        return await this.setArtifactTrackVersion(repoRoot, artifactName, packageName, "exp", {
+            lastVersion: expState?.lastVersion,
             nextVersion,
         });
     }
     async incrementArtifactMinorVersion(repoRoot, artifactName, packageName, fallbackVersion) {
         const existing = await this.getVersionRecord(repoRoot, artifactName, packageName);
-        const baseVersion = existing?.nextVersion ?? existing?.lastVersion ?? fallbackVersion ?? "0.1.0";
+        const releaseState = getTrackState(existing, "release");
+        const baseVersion = releaseState?.nextVersion ?? releaseState?.lastVersion ?? fallbackVersion ?? "0.1.0";
         const nextVersion = incrementMinorVersion(baseVersion);
-        return await this.setArtifactVersion(repoRoot, artifactName, packageName, {
-            lastVersion: existing?.lastVersion,
+        return await this.setReleaseTrackVersion(repoRoot, artifactName, packageName, {
+            lastVersion: releaseState?.lastVersion,
             nextVersion,
         });
     }
-    async advanceArtifactVersion(repoRoot, artifactName, packageName, deployedVersion, deployTarget) {
-        const isLocalTarget = deployTarget?.toLowerCase().includes("local") ?? false;
-        const nextVersion = isLocalTarget
-            ? incrementExpVersion(deployedVersion)
-            : incrementPatchVersion(deployedVersion);
-        return await this.setArtifactVersion(repoRoot, artifactName, packageName, {
+    async advanceArtifactVersion(repoRoot, artifactName, packageName, deployedVersion, track = "patch") {
+        const persistedTrack = toPersistedTrack(track);
+        if (persistedTrack !== "release") {
+            const nextVersion = incrementVersionForTrack(deployedVersion, track);
+            return await this.setArtifactTrackVersion(repoRoot, artifactName, packageName, persistedTrack, {
+                lastVersion: deployedVersion,
+                nextVersion,
+            });
+        }
+        const nextReleaseVersion = incrementVersionForTrack(deployedVersion, track);
+        let record = await this.setReleaseTrackVersion(repoRoot, artifactName, packageName, {
             lastVersion: deployedVersion,
-            nextVersion,
+            nextVersion: nextReleaseVersion,
         });
+        await this.setArtifactTrackVersion(repoRoot, artifactName, packageName, "exp", {
+            lastVersion: undefined,
+            nextVersion: derivePrereleaseFromReleaseBase(nextReleaseVersion, "exp"),
+        });
+        await this.setArtifactTrackVersion(repoRoot, artifactName, packageName, "beta", {
+            lastVersion: undefined,
+            nextVersion: derivePrereleaseFromReleaseBase(nextReleaseVersion, "beta"),
+        });
+        return await this.setReleaseTrackVersion(repoRoot, artifactName, packageName, {
+            lastVersion: deployedVersion,
+            nextVersion: nextReleaseVersion,
+        });
+    }
+    async setReleaseTrackVersion(repoRoot, artifactName, packageName, updates) {
+        return await this.setArtifactTrackVersion(repoRoot, artifactName, packageName, "release", updates);
     }
     async ensureRepo(repoRoot) {
         await this.rememberRepo(repoRoot);
@@ -263,6 +320,13 @@ function incrementPatchVersion(version) {
     }
     return `${parsed.major}.${parsed.minor}.${parsed.patch + 1}`;
 }
+function decrementPatchVersion(version) {
+    const parsed = parseVersion(version);
+    if (!parsed || parsed.patch === 0) {
+        return undefined;
+    }
+    return `${parsed.major}.${parsed.minor}.${parsed.patch - 1}`;
+}
 function incrementMinorVersion(version) {
     const exp = parseExpVersion(version);
     if (exp) {
@@ -279,11 +343,30 @@ function incrementExpVersion(version) {
     if (exp) {
         return `${exp.major}.${exp.minor}.${exp.patch}-exp.${exp.exp + 1}`;
     }
+    const beta = parseBetaVersion(version);
+    if (beta) {
+        return `${beta.major}.${beta.minor}.${beta.patch + 1}-exp.0`;
+    }
     const parsed = parseVersion(version);
     if (parsed) {
         return `${parsed.major}.${parsed.minor}.${parsed.patch + 1}-exp.0`;
     }
     return "0.1.1-exp.0";
+}
+function incrementBetaVersion(version) {
+    const beta = parseBetaVersion(version);
+    if (beta) {
+        return `${beta.major}.${beta.minor}.${beta.patch}-beta.${beta.beta + 1}`;
+    }
+    const exp = parseExpVersion(version);
+    if (exp) {
+        return `${exp.major}.${exp.minor}.${exp.patch}-beta.0`;
+    }
+    const parsed = parseVersion(version);
+    if (parsed) {
+        return `${parsed.major}.${parsed.minor}.${parsed.patch + 1}-beta.0`;
+    }
+    return "0.1.1-beta.0";
 }
 function parseExpVersion(value) {
     const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)[.\-]exp\.(0|[1-9]\d*)$/.exec(value.trim());
@@ -297,8 +380,20 @@ function parseExpVersion(value) {
         exp: Number(match[4]),
     };
 }
+function parseBetaVersion(value) {
+    const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)[.\-]beta\.(0|[1-9]\d*)$/.exec(value.trim());
+    if (!match) {
+        return null;
+    }
+    return {
+        major: Number(match[1]),
+        minor: Number(match[2]),
+        patch: Number(match[3]),
+        beta: Number(match[4]),
+    };
+}
 function isValidVersionString(value) {
-    return parseVersion(value) !== null || parseExpVersion(value) !== null;
+    return parseVersion(value) !== null || parseExpVersion(value) !== null || parseBetaVersion(value) !== null;
 }
 function isValidExpVersionString(value) {
     return parseExpVersion(value) !== null;
@@ -321,6 +416,7 @@ function normalizeStateFile(input) {
                 packageName: typeof artifactValue.packageName === "string" ? artifactValue.packageName : undefined,
                 lastVersion: typeof artifactValue.lastVersion === "string" ? artifactValue.lastVersion : undefined,
                 nextVersion: typeof artifactValue.nextVersion === "string" ? artifactValue.nextVersion : undefined,
+                tracks: normalizeTrackStates(artifactValue),
                 updatedAt: typeof artifactValue.updatedAt === "string" ? artifactValue.updatedAt : new Date(0).toISOString(),
             };
         }
@@ -341,6 +437,193 @@ function normalizeStateFile(input) {
         repos: normalizedRepos,
     };
 }
+function normalizeTrackStates(value) {
+    const tracksValue = isRecord(value.tracks) ? value.tracks : {};
+    let releaseState = normalizeSingleTrackState(tracksValue["release"]);
+    let expState = normalizeSingleTrackState(tracksValue["exp"]);
+    let betaState = normalizeSingleTrackState(tracksValue["beta"]);
+    const legacyLastVersion = typeof value.lastVersion === "string" ? value.lastVersion : undefined;
+    const legacyNextVersion = typeof value.nextVersion === "string" ? value.nextVersion : undefined;
+    const legacyUpdatedAt = typeof value.updatedAt === "string" ? value.updatedAt : undefined;
+    const legacyTrack = detectLegacyTrack(legacyNextVersion ?? legacyLastVersion);
+    const fallbackRelease = legacyTrack === "release"
+        ? {
+            lastVersion: legacyLastVersion,
+            nextVersion: legacyNextVersion,
+            updatedAt: legacyUpdatedAt,
+        }
+        : {
+            nextVersion: stripPrereleaseToStable(legacyNextVersion ?? legacyLastVersion),
+            updatedAt: legacyUpdatedAt,
+        };
+    const fallbackExp = legacyTrack === "exp"
+        ? {
+            lastVersion: legacyLastVersion,
+            nextVersion: legacyNextVersion,
+            updatedAt: legacyUpdatedAt,
+        }
+        : {};
+    const fallbackBeta = legacyTrack === "beta"
+        ? {
+            lastVersion: legacyLastVersion,
+            nextVersion: legacyNextVersion,
+            updatedAt: legacyUpdatedAt,
+        }
+        : {};
+    releaseState =
+        releaseState.lastVersion || releaseState.nextVersion
+            ? releaseState
+            : fallbackRelease.lastVersion || fallbackRelease.nextVersion
+                ? fallbackRelease
+                : {};
+    expState =
+        expState.lastVersion || expState.nextVersion
+            ? expState
+            : fallbackExp.nextVersion || fallbackExp.lastVersion
+                ? fallbackExp
+                : {};
+    betaState =
+        betaState.lastVersion || betaState.nextVersion
+            ? betaState
+            : fallbackBeta.nextVersion || fallbackBeta.lastVersion
+                ? fallbackBeta
+                : {};
+    // Repair older records where prerelease values were accidentally written
+    // into the hidden release lane. Move them back to their real lane and keep
+    // the release lane on the stable base.
+    const releaseLaneType = detectLegacyTrack(releaseState.nextVersion ?? releaseState.lastVersion);
+    if (releaseLaneType === "exp") {
+        if (!expState.lastVersion && !expState.nextVersion) {
+            expState = { ...releaseState };
+        }
+        releaseState = deriveReleaseStateFromPrerelease(releaseState);
+    }
+    else if (releaseLaneType === "beta") {
+        if (!betaState.lastVersion && !betaState.nextVersion) {
+            betaState = { ...releaseState };
+        }
+        releaseState = deriveReleaseStateFromPrerelease(releaseState);
+    }
+    const prereleaseBase = stripPrereleaseToStable(expState.nextVersion ??
+        expState.lastVersion ??
+        betaState.nextVersion ??
+        betaState.lastVersion);
+    if (releaseState.lastVersion &&
+        releaseState.nextVersion &&
+        releaseState.lastVersion === releaseState.nextVersion &&
+        prereleaseBase === releaseState.nextVersion) {
+        releaseState = {
+            lastVersion: decrementPatchVersion(releaseState.nextVersion),
+            nextVersion: releaseState.nextVersion,
+            updatedAt: releaseState.updatedAt,
+        };
+    }
+    return {
+        release: releaseState.lastVersion || releaseState.nextVersion ? releaseState : undefined,
+        exp: expState.lastVersion || expState.nextVersion ? expState : undefined,
+        beta: betaState.lastVersion || betaState.nextVersion ? betaState : undefined,
+    };
+}
+function normalizeSingleTrackState(value) {
+    if (!isRecord(value)) {
+        return {};
+    }
+    return {
+        lastVersion: typeof value.lastVersion === "string" ? value.lastVersion : undefined,
+        nextVersion: typeof value.nextVersion === "string" ? value.nextVersion : undefined,
+        updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : undefined,
+    };
+}
+function normalizeArtifactVersionRecord(record) {
+    const tracks = normalizeTrackStates(record);
+    const releaseState = tracks.release;
+    return {
+        artifactName: record.artifactName,
+        packageName: record.packageName,
+        lastVersion: releaseState?.lastVersion,
+        nextVersion: releaseState?.nextVersion,
+        tracks,
+        updatedAt: record.updatedAt,
+    };
+}
+function getTrackState(record, track) {
+    return record?.tracks?.[track];
+}
+function toPersistedTrack(track) {
+    return track === "exp" || track === "beta" ? track : "release";
+}
+function withTrackUpdates(record, track, updates) {
+    const updatedAt = new Date().toISOString();
+    const nextTracks = {
+        ...(record.tracks ?? {}),
+        [track]: {
+            lastVersion: updates.lastVersion,
+            nextVersion: updates.nextVersion,
+            updatedAt,
+        },
+    };
+    if (updates.lastVersion === undefined && updates.nextVersion === undefined) {
+        delete nextTracks[track];
+    }
+    return normalizeArtifactVersionRecord({
+        ...record,
+        lastVersion: record.tracks?.release?.lastVersion,
+        nextVersion: record.tracks?.release?.nextVersion,
+        tracks: nextTracks,
+        updatedAt,
+    });
+}
+function derivePrereleaseFromReleaseBase(version, track) {
+    const parsed = parseVersion(version);
+    if (parsed) {
+        return track === "exp"
+            ? `${parsed.major}.${parsed.minor}.${parsed.patch}-exp.0`
+            : `${parsed.major}.${parsed.minor}.${parsed.patch}-beta.0`;
+    }
+    return track === "exp" ? incrementExpVersion(version) : incrementBetaVersion(version);
+}
+function detectLegacyTrack(version) {
+    if (!version) {
+        return "release";
+    }
+    if (parseExpVersion(version)) {
+        return "exp";
+    }
+    if (parseBetaVersion(version)) {
+        return "beta";
+    }
+    return "release";
+}
+function stripPrereleaseToStable(version) {
+    if (!version) {
+        return undefined;
+    }
+    const exp = parseExpVersion(version);
+    if (exp) {
+        return `${exp.major}.${exp.minor}.${exp.patch}`;
+    }
+    const beta = parseBetaVersion(version);
+    if (beta) {
+        return `${beta.major}.${beta.minor}.${beta.patch}`;
+    }
+    return version;
+}
+function deriveReleaseStateFromPrerelease(prereleaseState) {
+    const nextStable = stripPrereleaseToStable(prereleaseState.nextVersion ?? prereleaseState.lastVersion);
+    return {
+        lastVersion: nextStable ? decrementPatchVersion(nextStable) : undefined,
+        nextVersion: nextStable,
+        updatedAt: prereleaseState.updatedAt,
+    };
+}
+function withDisplayedTrack(record, track) {
+    const trackState = getTrackState(record, track);
+    return {
+        ...record,
+        lastVersion: trackState?.lastVersion,
+        nextVersion: trackState?.nextVersion,
+    };
+}
 function parseVersion(value) {
     const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.exec(value.trim());
     if (!match) {
@@ -351,6 +634,35 @@ function parseVersion(value) {
         minor: Number(match[2]),
         patch: Number(match[3]),
     };
+}
+function isVersionTrack(value) {
+    return value === "patch" || value === "minor" || value === "exp" || value === "beta";
+}
+function versionMatchesTrack(version, track) {
+    switch (track) {
+        case "exp":
+            return parseExpVersion(version) !== null;
+        case "beta":
+            return parseBetaVersion(version) !== null;
+        case "patch":
+        case "minor":
+            return parseExpVersion(version) === null && parseBetaVersion(version) === null && parseVersion(version) !== null;
+        default:
+            return false;
+    }
+}
+function incrementVersionForTrack(version, track) {
+    switch (track) {
+        case "exp":
+            return incrementExpVersion(version);
+        case "beta":
+            return incrementBetaVersion(version);
+        case "minor":
+            return incrementMinorVersion(version);
+        case "patch":
+        default:
+            return incrementPatchVersion(version);
+    }
 }
 function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);

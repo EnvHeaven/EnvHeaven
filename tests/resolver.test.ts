@@ -42,6 +42,9 @@ test("materializes local-01 artifact execution plans through ArtifactsRunners", 
   assert.match(plan.execution?.env.EH_ENV_VARS_JSON ?? "", /"EH_SELF_PORT":"4101"/);
   assert.match(plan.execution?.env.EH_ENV_VARS_JSON ?? "", /"EH_OTHER_PORT":"4102"/);
   assert.match(plan.execution?.env.EH_ENV_VARS_JSON ?? "", /"EH_OTHER_ENV":"local-01"/);
+  assert.match(plan.execution?.env.EH_ENV_VARS_JSON ?? "", /"EH_BOOL_BASE":false/);
+  assert.match(plan.execution?.env.EH_ENV_VARS_JSON ?? "", /"EH_BOOL_LAYER":true/);
+  assert.equal((plan.resolvedModel.Versioning as Record<string, unknown> | undefined)?.DefaultTrack, "exp");
   assert.ok(plan.artifactExecutions.some((artifactExecution) => artifactExecution.status === "runnable"));
   assert.ok(plan.artifactExecutions.some((artifactExecution) => artifactExecution.status === "partial"));
 });

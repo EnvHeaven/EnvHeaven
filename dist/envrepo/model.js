@@ -110,6 +110,9 @@ function normalizeSharedLayerSections(payload) {
     if (isRecord(payload.RepoDeployExecutions)) {
         result.RepoDeployExecutions = deepCloneRecord(payload.RepoDeployExecutions);
     }
+    if (isRecord(payload.Versioning)) {
+        result.Versioning = deepCloneRecord(payload.Versioning);
+    }
     return result;
 }
 function normalizeEnvMapLayers(value) {

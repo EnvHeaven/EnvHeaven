@@ -149,6 +149,10 @@ function normalizeSharedLayerSections(payload: Record<string, unknown>): Record<
     result.RepoDeployExecutions = deepCloneRecord(payload.RepoDeployExecutions);
   }
 
+  if (isRecord(payload.Versioning)) {
+    result.Versioning = deepCloneRecord(payload.Versioning);
+  }
+
   return result;
 }
 

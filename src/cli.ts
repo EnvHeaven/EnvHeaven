@@ -31,7 +31,14 @@ import {
 } from "./guards/challenge";
 import { launchOffilineWebUi } from "./offiline/launcher";
 import { loadPlugin } from "./plugins/loader";
-import { EnvHeavenStateStore } from "./state/store";
+import {
+  EnvHeavenStateStore,
+  getTrackState,
+  incrementVersionForTrack,
+  isVersionTrack,
+  toPersistedTrack,
+  versionMatchesTrack,
+} from "./state/store";
 import { loadPreferences, savePreferences } from "./state/preferences";
 import { readLockFile, writeLockFile, clearLockFile, isPortOpen, waitForLockFile } from "./state/lock";
 import type {
@@ -44,6 +51,7 @@ import type {
   ResolvedPlan,
   SupportedTarget,
 } from "./types";
+import type { VersionTrack } from "./state/store";
 
 const PACKAGE_VERSION: string = (() => {
   const store = new EnvHeavenStateStore();
@@ -698,8 +706,11 @@ async function main(): Promise<void> {
       diagnostics,
       stateStore,
       repoModel.aliases,
+      plan.resolvedModel,
+      plan.resolvedTarget,
     );
 
+    const hydratedArtifactVersionMap: Record<string, string> = {};
     const hydratedArtifactExecutions = await Promise.all(
       plan.artifactExecutions.map(async (artifactExecution) => {
         if (artifactExecution.status !== "runnable" || !artifactExecution.execution) {
@@ -713,7 +724,9 @@ async function main(): Promise<void> {
           stateStore,
           plan.resolvedTarget,
           artifactVersionMap,
+          plan.resolvedModel,
         );
+        hydratedArtifactVersionMap[artifactExecution.artifactName] = hydrated.resolvedVersion;
 
         return {
           ...artifactExecution,
@@ -781,6 +794,17 @@ async function main(): Promise<void> {
       };
 
       const pluginCache = new Map<string, Awaited<ReturnType<typeof loadPlugin>>>();
+      for (const entry of runnableArtifacts) {
+        await advanceResolvedArtifactVersion(
+          entry,
+          runtimeContext.repoRoot,
+          stateStore,
+          hydratedArtifactVersionMap[entry.artifactName] ?? "0.1.0",
+          plan.resolvedModel,
+          plan.resolvedTarget,
+        );
+      }
+
       const promises = runnableArtifacts.map(async (entry) => {
         const exec = entry.execution!;
         const port = extractPortFromExecution(exec.args, exec.env);
@@ -922,6 +946,37 @@ async function main(): Promise<void> {
         }
         executionResult = { exitCode: executed.exitCode, details: executed.details };
       }
+    }
+  }
+
+  if (
+    intent.kind === "run" &&
+    !hasErrors(diagnostics) &&
+    typeof executionResult?.exitCode === "number" &&
+    executionResult.exitCode === 0
+  ) {
+    const selectedArtifact = plan.artifactExecutions.find(
+      (artifactExecution) =>
+        artifactExecution.status === "runnable" &&
+        artifactExecution.execution === plan.execution,
+    );
+    if (selectedArtifact) {
+      const hydratedVersion = await resolveArtifactVersionValue(
+        selectedArtifact,
+        runtimeContext.repoRoot,
+        diagnostics,
+        stateStore,
+        plan.resolvedTarget,
+        plan.resolvedModel,
+      );
+      await advanceResolvedArtifactVersion(
+        selectedArtifact,
+        runtimeContext.repoRoot,
+        stateStore,
+        hydratedVersion,
+        plan.resolvedModel,
+        plan.resolvedTarget,
+      );
     }
   }
 
@@ -1106,6 +1161,88 @@ interface DeploySummaryEntry {
   newVersion: string | null;
 }
 
+function fallbackVersionTrackForTarget(target?: string): VersionTrack {
+  const normalized = target?.toLowerCase() ?? "";
+  if (normalized.includes("beta")) {
+    return "beta";
+  }
+  if (normalized.includes("local") || normalized.includes("development")) {
+    return "exp";
+  }
+  return "patch";
+}
+
+function resolveVersionTrackForArtifact(
+  resolvedModel: Record<string, unknown>,
+  artifactName: string,
+  resolvedTarget?: string,
+): VersionTrack {
+  const fallback = fallbackVersionTrackForTarget(resolvedTarget);
+  const versioning = resolvedModel["Versioning"] ?? resolvedModel["versioning"];
+
+  if (typeof versioning === "string" && isVersionTrack(versioning.trim().toLowerCase())) {
+    return versioning.trim().toLowerCase() as VersionTrack;
+  }
+
+  if (!versioning || typeof versioning !== "object" || Array.isArray(versioning)) {
+    return fallback;
+  }
+
+  const versioningRecord = versioning as Record<string, unknown>;
+  const artifactsValue = versioningRecord["Artifacts"] ?? versioningRecord["artifacts"];
+  if (artifactsValue && typeof artifactsValue === "object" && !Array.isArray(artifactsValue)) {
+    const artifactTrackValue =
+      (artifactsValue as Record<string, unknown>)[artifactName] ??
+      (artifactName in (artifactsValue as Record<string, unknown>) ? (artifactsValue as Record<string, unknown>)[artifactName] : undefined);
+    if (typeof artifactTrackValue === "string") {
+      const normalizedArtifactTrack = artifactTrackValue.trim().toLowerCase();
+      if (isVersionTrack(normalizedArtifactTrack)) {
+        return normalizedArtifactTrack as VersionTrack;
+      }
+    }
+  }
+
+  const defaultTrackValue =
+    versioningRecord["DefaultTrack"] ??
+    versioningRecord["defaultTrack"] ??
+    versioningRecord["Track"] ??
+    versioningRecord["track"];
+  if (typeof defaultTrackValue === "string") {
+    const normalizedDefaultTrack = defaultTrackValue.trim().toLowerCase();
+    if (isVersionTrack(normalizedDefaultTrack)) {
+      return normalizedDefaultTrack as VersionTrack;
+    }
+  }
+
+  return fallback;
+}
+
+function getRecordStateForTrack(
+  record: Awaited<ReturnType<EnvHeavenStateStore["getVersionRecord"]>>,
+  track: VersionTrack,
+) {
+  return getTrackState(record, toPersistedTrack(track));
+}
+
+async function advanceResolvedArtifactVersion(
+  artifactExecution: ArtifactExecutionPlan,
+  repoRoot: string,
+  stateStore: EnvHeavenStateStore,
+  resolvedVersion: string,
+  resolvedModel: Record<string, unknown>,
+  resolvedTarget: string,
+  packageNameFallback?: string,
+) {
+  const versionTrack = resolveVersionTrackForArtifact(resolvedModel, artifactExecution.artifactName, resolvedTarget);
+  return await stateStore.advanceArtifactVersion(
+    repoRoot,
+    artifactExecution.artifactName,
+    artifactExecution.packageName ?? packageNameFallback,
+    resolvedVersion,
+    versionTrack,
+  );
+}
+
 async function executeDeployPlan(
   plan: ResolvedPlan,
   runtimeContext: PluginRuntimeContext,
@@ -1131,6 +1268,8 @@ async function executeDeployPlan(
     diagnostics,
     stateStore,
     aliases,
+    plan.resolvedModel,
+    plan.resolvedTarget,
   );
 
   for (const repoExecution of plan.repoExecutions) {
@@ -1162,7 +1301,8 @@ async function executeDeployPlan(
       artifactExecution.artifactName,
       artifactExecution.packageName,
     );
-    const lastVersionBefore = existingRecord?.lastVersion ?? null;
+    const versionTrack = resolveVersionTrackForArtifact(plan.resolvedModel, artifactExecution.artifactName, plan.resolvedTarget);
+    const lastVersionBefore = getRecordStateForTrack(existingRecord, versionTrack)?.lastVersion ?? null;
 
     const hydrated = await hydrateArtifactExecution(
       artifactExecution,
@@ -1171,6 +1311,7 @@ async function executeDeployPlan(
       stateStore,
       plan.resolvedTarget,
       artifactVersionMap,
+      plan.resolvedModel,
     );
     const result = await executeArtifactDeploy(
       artifactExecution,
@@ -1180,6 +1321,7 @@ async function executeDeployPlan(
       diagnostics,
       stateStore,
       plan.resolvedTarget,
+      plan.resolvedModel,
     );
     verboseLog(`deploy step done: ${artifactExecution.runnerName} (exit ${String(result.exitCode)})`, options);
     artifactResults.push(result.payload);
@@ -1209,11 +1351,12 @@ async function hydrateArtifactExecution(
   stateStore: EnvHeavenStateStore,
   deployTarget: string,
   artifactVersionMap?: Record<string, string>,
+  resolvedModel: Record<string, unknown> = {},
 ): Promise<{ execution: ExecutionSpec | null; resolvedVersion: string }> {
   if (!artifactExecution.execution) return { execution: null, resolvedVersion: "0.1.0" };
   const resolvedVersionValue =
     artifactVersionMap?.[artifactExecution.artifactName] ??
-    await resolveArtifactVersionValue(artifactExecution, repoRoot, diagnostics, stateStore, deployTarget);
+    await resolveArtifactVersionValue(artifactExecution, repoRoot, diagnostics, stateStore, deployTarget, resolvedModel);
 
   return {
     execution: materializeDynamicVersionExecution(
@@ -1232,13 +1375,22 @@ async function buildArtifactVersionMap(
   diagnostics: Diagnostic[],
   stateStore: EnvHeavenStateStore,
   aliases: Record<string, string[]>,
+  resolvedModel: Record<string, unknown>,
+  resolvedTarget: string,
 ): Promise<Record<string, string>> {
   const entries = await Promise.all(
     artifactExecutions
       .filter((artifactExecution) => artifactExecution.status === "runnable" && artifactExecution.execution)
       .map(async (artifactExecution) => [
         artifactExecution.artifactName,
-        await resolveArtifactVersionValue(artifactExecution, repoRoot, diagnostics, stateStore),
+        await resolveArtifactVersionValue(
+          artifactExecution,
+          repoRoot,
+          diagnostics,
+          stateStore,
+          resolvedTarget,
+          resolvedModel,
+        ),
       ] as const),
   );
   const versionMap = Object.fromEntries(entries);
@@ -1258,24 +1410,77 @@ async function resolveArtifactVersionValue(
   repoRoot: string,
   diagnostics: Diagnostic[],
   stateStore: EnvHeavenStateStore,
-  _deployTarget?: string,
+  deployTarget?: string,
+  resolvedModel: Record<string, unknown> = {},
 ): Promise<string> {
   const packageDirectory = artifactExecution.repoCloneFolderPath
     ? path.resolve(repoRoot, artifactExecution.repoCloneFolderPath)
     : artifactExecution.execution?.cwd;
+  const versionTrack = resolveVersionTrackForArtifact(resolvedModel, artifactExecution.artifactName, deployTarget);
 
   const existingRecord = await stateStore.getVersionRecord(
     repoRoot,
     artifactExecution.artifactName,
     artifactExecution.packageName,
   );
+  const trackState = getRecordStateForTrack(existingRecord, versionTrack);
 
-  if (existingRecord?.nextVersion) {
-    return existingRecord.nextVersion;
+  if (trackState?.nextVersion && versionMatchesTrack(trackState.nextVersion, versionTrack)) {
+    return trackState.nextVersion;
   }
 
-  if (existingRecord?.lastVersion) {
-    return existingRecord.lastVersion;
+  if (trackState?.lastVersion || trackState?.nextVersion) {
+    const baseVersion = trackState.lastVersion ?? trackState.nextVersion ?? "0.1.0";
+    const derivedVersion = incrementVersionForTrack(baseVersion, versionTrack);
+    if (derivedVersion !== trackState?.nextVersion) {
+      await stateStore.setArtifactTrackVersion(
+        repoRoot,
+        artifactExecution.artifactName,
+        artifactExecution.packageName,
+        toPersistedTrack(versionTrack),
+        {
+          lastVersion: trackState?.lastVersion,
+          nextVersion: derivedVersion,
+        },
+      );
+      diagnostics.push(
+        createDiagnostic(
+          "info",
+          "version-track-derived",
+          `Artifact "${artifactExecution.artifactName}" next version derived as "${derivedVersion}" for "${versionTrack}" track.`,
+        ),
+      );
+    }
+    return derivedVersion;
+  }
+
+  const releaseState = getTrackState(existingRecord, "release");
+  if (releaseState?.lastVersion || releaseState?.nextVersion) {
+    const releaseBase = releaseState.nextVersion ?? releaseState.lastVersion ?? "0.1.0";
+    const derivedVersion =
+      versionTrack === "exp"
+        ? `${releaseBase}-exp.0`
+        : versionTrack === "beta"
+        ? `${releaseBase}-beta.0`
+        : incrementVersionForTrack(releaseBase, versionTrack);
+    await stateStore.setArtifactTrackVersion(
+      repoRoot,
+      artifactExecution.artifactName,
+      artifactExecution.packageName,
+      toPersistedTrack(versionTrack),
+      {
+        lastVersion: undefined,
+        nextVersion: derivedVersion,
+      },
+    );
+    diagnostics.push(
+      createDiagnostic(
+        "info",
+        "version-track-derived",
+        `Artifact "${artifactExecution.artifactName}" next version derived as "${derivedVersion}" for "${versionTrack}" track.`,
+      ),
+    );
+    return derivedVersion;
   }
 
   let packageJsonVersion = "0.1.0";
@@ -1293,13 +1498,15 @@ async function resolveArtifactVersionValue(
     artifactExecution.artifactName,
     artifactExecution.packageName,
     packageJsonVersion,
+    versionTrack,
   );
-  const resolvedVersionValue = record.nextVersion ?? record.lastVersion ?? packageJsonVersion;
+  const resolvedTrackState = getRecordStateForTrack(record, versionTrack);
+  const resolvedVersionValue = resolvedTrackState?.nextVersion ?? resolvedTrackState?.lastVersion ?? packageJsonVersion;
   diagnostics.push(
     createDiagnostic(
       "info",
       "version-bootstrapped",
-      `Artifact "${artifactExecution.artifactName}" version initialized to "${resolvedVersionValue}" (derived from package.json "${packageJsonVersion}").`,
+      `Artifact "${artifactExecution.artifactName}" version initialized to "${resolvedVersionValue}" on "${versionTrack}" track (derived from package.json "${packageJsonVersion}").`,
     ),
   );
 
@@ -1314,6 +1521,7 @@ async function executeArtifactDeploy(
   diagnostics: Diagnostic[],
   stateStore: EnvHeavenStateStore,
   deployTarget: string,
+  resolvedModel: Record<string, unknown>,
 ): Promise<{ exitCode: number; payload: Record<string, unknown> }> {
   if (!hydratedExecution) {
     return {
@@ -1347,14 +1555,29 @@ async function executeArtifactDeploy(
       "deploy",
       deployTarget as SupportedTarget,
     );
+    const payload: Record<string, unknown> = {
+      artifactName: artifactExecution.artifactName,
+      runnerName: artifactExecution.runnerName,
+      status: artifactExecution.status,
+      version: hydratedVersion,
+      result,
+    };
+
+    if ((result.exitCode ?? 0) === 0) {
+      const updatedVersion = await advanceResolvedArtifactVersion(
+        artifactExecution,
+        runtimeContext.repoRoot,
+        stateStore,
+        hydratedVersion,
+        resolvedModel,
+        deployTarget,
+      );
+      payload.versionRegistry = updatedVersion;
+    }
+
     return {
       exitCode: (result.exitCode as number) ?? 1,
-      payload: {
-        artifactName: artifactExecution.artifactName,
-        runnerName: artifactExecution.runnerName,
-        status: artifactExecution.status,
-        result,
-      },
+      payload,
     };
   }
 
@@ -1413,12 +1636,14 @@ async function executeArtifactDeploy(
   };
 
   if ((result.exitCode ?? 0) === 0) {
-    const updatedVersion = await stateStore.advanceArtifactVersion(
+    const updatedVersion = await advanceResolvedArtifactVersion(
+      artifactExecution,
       runtimeContext.repoRoot,
-      artifactExecution.artifactName,
-      artifactExecution.packageName ?? packageMetadata.name,
+      stateStore,
       resolvedVersionValue,
+      resolvedModel,
       deployTarget,
+      artifactExecution.packageName ?? packageMetadata.name,
     );
     payload.versionRegistry = updatedVersion;
 
