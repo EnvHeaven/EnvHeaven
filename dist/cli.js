@@ -671,7 +671,7 @@ async function main() {
     }
     if (intent.kind === "deploy") {
         const challengeRequirement = (0, challenge_1.buildChallengeFromResolvedModel)(plan.resolvedModel, plan.resolvedTarget);
-        if (challengeRequirement) {
+        if (challengeRequirement && !(0, diagnostics_1.hasErrors)(diagnostics)) {
             if (options.jsonResponse) {
                 diagnostics.push((0, diagnostics_1.createDiagnostic)("error", "challenge-required-non-interactive", `Deploy to "${plan.resolvedTarget}" requires interactive confirmation (challenge: "${challengeRequirement.phrase}"). ` +
                     `Cannot proceed in JSON/non-interactive mode.`));

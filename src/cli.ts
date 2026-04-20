@@ -844,7 +844,7 @@ async function main(): Promise<void> {
       plan.resolvedTarget,
     );
 
-    if (challengeRequirement) {
+    if (challengeRequirement && !hasErrors(diagnostics)) {
       if (options.jsonResponse) {
         diagnostics.push(
           createDiagnostic(
