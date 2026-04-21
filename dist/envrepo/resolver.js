@@ -602,12 +602,17 @@ function materializeTemplateString(value, artifactName, templateContext, diagnos
                 return "";
         }
     });
-    if (replaced.includes("{{") || replaced === "") {
+    if (hasUnresolvedTemplateTokens(replaced) || replaced === "") {
         if (value.includes("{{")) {
             diagnostics.push((0, diagnostics_1.createDiagnostic)("warning", "artifact-template-unresolved", `Unable to resolve ${fieldName} template for artifact "${artifactName}".`));
         }
     }
     return replaced.length > 0 ? replaced : undefined;
+}
+function hasUnresolvedTemplateTokens(value) {
+    return value
+        .replace(/\{\{\s*GetDynamicArtifactVersionOf\((['"`])([^'"`]+)\1\)\s*\}\}/g, "")
+        .includes("{{");
 }
 function materializeStringArray(value, artifactName, templateContext, diagnostics, fieldName, lookupTemplateContexts) {
     if (!Array.isArray(value)) {

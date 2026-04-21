@@ -995,7 +995,7 @@ function materializeTemplateString(
     }
   });
 
-  if (replaced.includes("{{") || replaced === "") {
+  if (hasUnresolvedTemplateTokens(replaced) || replaced === "") {
     if (value.includes("{{")) {
       diagnostics.push(
         createDiagnostic(
@@ -1008,6 +1008,12 @@ function materializeTemplateString(
   }
 
   return replaced.length > 0 ? replaced : undefined;
+}
+
+function hasUnresolvedTemplateTokens(value: string): boolean {
+  return value
+    .replace(/\{\{\s*GetDynamicArtifactVersionOf\((['"`])([^'"`]+)\1\)\s*\}\}/g, "")
+    .includes("{{");
 }
 
 function materializeStringArray(

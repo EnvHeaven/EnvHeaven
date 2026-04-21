@@ -686,6 +686,7 @@ async function main(): Promise<void> {
   };
 
   if (intent.kind === "run") {
+    const allArtifactExecutions = plan.artifactExecutions;
     const selection = resolveArtifactSelection(plan.artifactExecutions, intent.artifactSelectors ?? []);
     diagnostics.push(...selection.diagnostics);
     if (!hasErrors(diagnostics)) {
@@ -701,7 +702,7 @@ async function main(): Promise<void> {
     }
 
     const artifactVersionMap = await buildArtifactVersionMap(
-      plan.artifactExecutions,
+      allArtifactExecutions,
       runtimeContext.repoRoot,
       diagnostics,
       stateStore,
@@ -918,7 +919,17 @@ async function main(): Promise<void> {
   let pluginDetails: Record<string, unknown> | undefined;
   let executionResult: Record<string, unknown> | undefined;
 
-  if (plan.pluginPackage) {
+  if (intent.kind === "run" && plan.execution && !plan.pluginPackage && !hasErrors(diagnostics)) {
+    verboseLog("spawn started", options);
+    const executed = await spawnExecution({
+      command: plan.execution.command!,
+      args: plan.execution.args,
+      env: plan.execution.env,
+      cwd: plan.execution.cwd,
+    });
+    verboseLog("spawn done", options);
+    executionResult = { exitCode: executed.exitCode };
+  } else if (plan.pluginPackage) {
     verboseLog(`plugin load: ${plan.pluginPackage}`, options);
     const loadedPlugin = await loadPlugin(plan.pluginPackage, repoRoot);
     verboseLog(`plugin loaded: ${plan.pluginPackage}`, options);

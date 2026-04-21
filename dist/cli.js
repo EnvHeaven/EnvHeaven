@@ -557,6 +557,7 @@ async function main() {
         spawnExecution: spawn_1.spawnExecution,
     };
     if (intent.kind === "run") {
+        const allArtifactExecutions = plan.artifactExecutions;
         const selection = (0, selection_1.resolveArtifactSelection)(plan.artifactExecutions, intent.artifactSelectors ?? []);
         diagnostics.push(...selection.diagnostics);
         if (!(0, diagnostics_1.hasErrors)(diagnostics)) {
@@ -568,7 +569,7 @@ async function main() {
                     null;
             plan.pluginPackage = plan.execution?.pluginPackage;
         }
-        const artifactVersionMap = await buildArtifactVersionMap(plan.artifactExecutions, runtimeContext.repoRoot, diagnostics, stateStore, repoModel.aliases, plan.resolvedModel, plan.resolvedTarget);
+        const artifactVersionMap = await buildArtifactVersionMap(allArtifactExecutions, runtimeContext.repoRoot, diagnostics, stateStore, repoModel.aliases, plan.resolvedModel, plan.resolvedTarget);
         const hydratedArtifactVersionMap = {};
         const hydratedArtifactExecutions = await Promise.all(plan.artifactExecutions.map(async (artifactExecution) => {
             if (artifactExecution.status !== "runnable" || !artifactExecution.execution) {
@@ -708,7 +709,18 @@ async function main() {
     }
     let pluginDetails;
     let executionResult;
-    if (plan.pluginPackage) {
+    if (intent.kind === "run" && plan.execution && !plan.pluginPackage && !(0, diagnostics_1.hasErrors)(diagnostics)) {
+        (0, cli_output_1.verboseLog)("spawn started", options);
+        const executed = await (0, spawn_1.spawnExecution)({
+            command: plan.execution.command,
+            args: plan.execution.args,
+            env: plan.execution.env,
+            cwd: plan.execution.cwd,
+        });
+        (0, cli_output_1.verboseLog)("spawn done", options);
+        executionResult = { exitCode: executed.exitCode };
+    }
+    else if (plan.pluginPackage) {
         (0, cli_output_1.verboseLog)(`plugin load: ${plan.pluginPackage}`, options);
         const loadedPlugin = await (0, loader_1.loadPlugin)(plan.pluginPackage, repoRoot);
         (0, cli_output_1.verboseLog)(`plugin loaded: ${plan.pluginPackage}`, options);
