@@ -23,6 +23,7 @@ export interface ActionDefinition {
     isLocalUser?: boolean;
     buttonColor?: string;
     terminalMode?: "pty" | "pipe";
+    runMode?: "stream" | "background";
 }
 export interface ArtifactMeta {
     icon?: string;
@@ -30,7 +31,13 @@ export interface ArtifactMeta {
     labelName?: string;
     instanceLabelName?: string;
 }
+export interface ActionOrderPreferences {
+    actionIds: string[];
+    headerActionIds: string[];
+}
 export declare function loadActions(repoRoot: string): Promise<ActionDefinition[]>;
+export declare function loadActionOrder(repoRoot: string): Promise<ActionOrderPreferences>;
+export declare function saveActionOrder(repoRoot: string, order: Partial<ActionOrderPreferences>): Promise<ActionOrderPreferences>;
 export declare function deleteAction(repoRoot: string, actionId: string): Promise<void>;
 export declare function saveAction(repoRoot: string, action: ActionDefinition): Promise<void>;
 export declare function moveAction(repoRoot: string, actionId: string, toLocalUser: boolean): Promise<void>;

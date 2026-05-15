@@ -57,6 +57,7 @@ const loader_1 = require("../plugins/loader");
 const runtime_1 = require("../deploy/runtime");
 const store_1 = require("../state/store");
 const loader_2 = require("../actions/loader");
+const preferences_1 = require("../local-user/preferences");
 const SUPPORTED_TARGETS = ["default", "local", "local-01", "fake-local", "fake-local-01"];
 const MAX_PTY_REPLAY_BYTES = 2 * 1024 * 1024;
 const MAX_COMPLETED_RUNS = 50;
@@ -413,6 +414,27 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
                 }, true);
                 return;
             }
+            // ─── GET /api/repos/pinned ───────────────────────────────────────────
+            if (url.pathname === "/api/repos/pinned" && request.method === "GET") {
+                const artifactIds = await (0, preferences_1.loadPinnedArtifactIds)(normalizedRootDirectory);
+                sendJson(response, 200, { artifactIds }, true);
+                return;
+            }
+            // ─── PUT /api/repos/pinned ───────────────────────────────────────────
+            if (url.pathname === "/api/repos/pinned" && request.method === "PUT") {
+                if (!isTrustedOrigin(request)) {
+                    sendJson(response, 403, { error: "Cross-origin mutation requests are not allowed." });
+                    return;
+                }
+                const payload = await readJsonBody(request);
+                const artifactIds = Array.isArray(payload.artifactIds)
+                    ? payload.artifactIds.filter((id) => typeof id === "string" && id.length > 0)
+                    : [];
+                await (0, preferences_1.savePinnedArtifactIds)(normalizedRootDirectory, artifactIds);
+                sendJson(response, 200, { ok: true, artifactIds });
+                broadcastEvent({ type: "repos:pinned-updated", payload: { artifactIds } });
+                return;
+            }
             // ─── PUT /api/repos/meta ─────────────────────────────────────────────
             if (url.pathname === "/api/repos/meta" && request.method === "PUT") {
                 if (!isTrustedOrigin(request)) {
@@ -558,7 +580,31 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
                 }
                 const resolvedActionsRoot = node_path_1.default.resolve(actionsRepoRoot);
                 const actions = await (0, loader_2.loadActions)(resolvedActionsRoot);
-                sendJson(response, 200, { repoRoot: resolvedActionsRoot, actions }, true);
+                const actionOrder = await (0, loader_2.loadActionOrder)(resolvedActionsRoot);
+                sendJson(response, 200, { repoRoot: resolvedActionsRoot, actions, actionOrder }, true);
+                return;
+            }
+            // ─── PUT /api/actions/order ──────────────────────────────────────────
+            if (url.pathname === "/api/actions/order" && request.method === "PUT") {
+                if (!isTrustedOrigin(request)) {
+                    sendJson(response, 403, { error: "Cross-origin mutation requests are not allowed." });
+                    return;
+                }
+                const payload = await readJsonBody(request);
+                const orderRepoRoot = typeof payload.repoRoot === "string" ? payload.repoRoot : null;
+                if (!orderRepoRoot) {
+                    sendJson(response, 400, { error: "repoRoot is required." });
+                    return;
+                }
+                const actionIds = Array.isArray(payload.actionIds)
+                    ? payload.actionIds.filter((id) => typeof id === "string" && id.length > 0)
+                    : [];
+                const orderScope = payload.scope === "header" ? "header" : "actions";
+                const resolvedOrderRoot = node_path_1.default.resolve(orderRepoRoot);
+                const actionOrder = await (0, loader_2.saveActionOrder)(resolvedOrderRoot, orderScope === "header" ? { headerActionIds: actionIds } : { actionIds });
+                const actions = await (0, loader_2.loadActions)(resolvedOrderRoot);
+                sendJson(response, 200, { ok: true, repoRoot: resolvedOrderRoot, actions, actionOrder });
+                broadcastEvent({ type: "actions:updated", payload: { repoRoot: resolvedOrderRoot } });
                 return;
             }
             // ─── POST /api/actions/dispatch ──────────────────────────────────────
@@ -678,6 +724,7 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
                     isLocalUser: payload.isLocalUser === true,
                     buttonColor: typeof payload.buttonColor === "string" ? payload.buttonColor : undefined,
                     terminalMode: payload.terminalMode === "pipe" ? "pipe" : payload.terminalMode === "pty" ? "pty" : undefined,
+                    runMode: payload.runMode === "background" ? "background" : payload.runMode === "stream" ? "stream" : undefined,
                 };
                 await (0, loader_2.saveAction)(configRepoRoot, action);
                 sendJson(response, 200, { ok: true, action });

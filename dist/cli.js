@@ -77,6 +77,8 @@ const PACKAGE_VERSION = (() => {
     }
 })();
 const BG_MODE = process.env["ENVHEAVEN_BG_MODE"] === "1";
+const DEFAULT_DAEMON_PORT = 42990;
+const DEFAULT_UI_PORT = 42991;
 function promptConfirm(question) {
     return new Promise((resolve) => {
         const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -134,14 +136,14 @@ async function main() {
     await stateStore.rememberRepo(repoRoot);
     if (intent.kind === "daemon") {
         if (BG_MODE) {
-            const { server, killAllRuns } = await (0, server_1.startDaemon)(repoRoot, 42990, stateStore, PACKAGE_VERSION);
+            const { server, killAllRuns } = await (0, server_1.startDaemon)(repoRoot, DEFAULT_DAEMON_PORT, stateStore, PACKAGE_VERSION);
             const address = server.address();
             const daemonPort = typeof address === "object" && address ? address.port : 0;
             let uiPort = null;
             const bgPrefs = await (0, preferences_1.loadPreferences)();
             if (bgPrefs?.autoStartUi) {
                 try {
-                    const launched = await (0, launcher_1.launchOffilineWebUi)(repoRoot, `http://127.0.0.1:${String(daemonPort)}`, stateStore, 42991);
+                    const launched = await (0, launcher_1.launchOffilineWebUi)(repoRoot, `http://127.0.0.1:${String(daemonPort)}`, stateStore, DEFAULT_UI_PORT);
                     const uiAddr = launched.server.address();
                     uiPort = typeof uiAddr === "object" && uiAddr ? uiAddr.port : null;
                 }
@@ -187,6 +189,8 @@ async function main() {
             if (!alive) {
                 const msg = intent.subcommand === "restart" ? "Service is not running — starting fresh." : "Service is not running.";
                 if (intent.subcommand === "stop") {
+                    await killProcess(null, DEFAULT_DAEMON_PORT, 2000);
+                    await killProcess(null, DEFAULT_UI_PORT, 2000);
                     (0, cli_output_1.writeOutput)({ diagnostics: [(0, diagnostics_1.createDiagnostic)("info", "daemon-already-stopped", msg)] }, 0, options);
                     return;
                 }
@@ -310,7 +314,7 @@ async function main() {
             if (uiOnlyDaemonPortStr) {
                 // Reuse existing daemon — only start UI
                 const existingDaemonPort = parseInt(uiOnlyDaemonPortStr, 10);
-                const launched = await (0, launcher_1.launchOffilineWebUi)(repoRoot, `http://127.0.0.1:${String(existingDaemonPort)}`, stateStore, 42991);
+                const launched = await (0, launcher_1.launchOffilineWebUi)(repoRoot, `http://127.0.0.1:${String(existingDaemonPort)}`, stateStore, DEFAULT_UI_PORT);
                 const uiAddress = launched.server.address();
                 const uiPort = typeof uiAddress === "object" && uiAddress ? uiAddress.port : null;
                 // Update lock file to record uiPort (daemon port and PID preserved)
@@ -334,10 +338,10 @@ async function main() {
                 return;
             }
             // Full mode: start daemon + UI
-            const { server: daemonServer, killAllRuns: killDaemonRuns } = await (0, server_1.startDaemon)(repoRoot, 42990, stateStore, PACKAGE_VERSION);
+            const { server: daemonServer, killAllRuns: killDaemonRuns } = await (0, server_1.startDaemon)(repoRoot, DEFAULT_DAEMON_PORT, stateStore, PACKAGE_VERSION);
             const daemonAddress = daemonServer.address();
             const daemonPort = typeof daemonAddress === "object" && daemonAddress ? daemonAddress.port : 0;
-            const launched = await (0, launcher_1.launchOffilineWebUi)(repoRoot, `http://127.0.0.1:${String(daemonPort)}`, stateStore, 42991);
+            const launched = await (0, launcher_1.launchOffilineWebUi)(repoRoot, `http://127.0.0.1:${String(daemonPort)}`, stateStore, DEFAULT_UI_PORT);
             const uiAddress = launched.server.address();
             const uiPort = typeof uiAddress === "object" && uiAddress ? uiAddress.port : null;
             await (0, lock_1.writeLockFile)(paths, {
@@ -425,6 +429,7 @@ async function main() {
         if (intent.subcommand === "stop" || intent.subcommand === "restart") {
             if (!uiAlive) {
                 if (intent.subcommand === "stop") {
+                    await killProcess(null, DEFAULT_UI_PORT, 2000, daemonAlive ? lock.daemonPort : undefined);
                     (0, cli_output_1.writeOutput)({ diagnostics: [(0, diagnostics_1.createDiagnostic)("info", "ui-already-stopped", "Offline GUI is not running.")] }, 0, options);
                     return;
                 }

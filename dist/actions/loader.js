@@ -4,6 +4,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.loadActions = loadActions;
+exports.loadActionOrder = loadActionOrder;
+exports.saveActionOrder = saveActionOrder;
 exports.deleteAction = deleteAction;
 exports.saveAction = saveAction;
 exports.moveAction = moveAction;
@@ -17,6 +19,7 @@ const ACTIONS_SUBDIR = "actions";
 const LOCAL_USER_SUBDIR = "local-user";
 const ACTION_SUFFIX = ".envheaven.action.json";
 const ARTIFACT_META_FILE = "artifact-meta.json";
+const ACTION_ORDER_FILE = "action-order.json";
 async function loadActions(repoRoot) {
     const actionsDir = node_path_1.default.join(repoRoot, ENV_DIR, ACTIONS_SUBDIR);
     const localUserDir = node_path_1.default.join(actionsDir, LOCAL_USER_SUBDIR);
@@ -25,7 +28,60 @@ async function loadActions(repoRoot) {
     actions.push(...baseActions);
     const localActions = await loadActionsFromDir(localUserDir, true);
     actions.push(...localActions);
-    return actions;
+    return actions.sort((a, b) => a.id.localeCompare(b.id));
+}
+async function loadActionOrder(repoRoot) {
+    try {
+        const raw = await node_fs_1.promises.readFile(actionOrderPath(repoRoot), "utf8");
+        const parsed = JSON.parse(raw);
+        return {
+            actionIds: normalizeIdList(parsed["actionIds"]),
+            headerActionIds: normalizeIdList(parsed["headerActionIds"]),
+        };
+    }
+    catch {
+        return { actionIds: [], headerActionIds: [] };
+    }
+}
+async function saveActionOrder(repoRoot, order) {
+    const filePath = actionOrderPath(repoRoot);
+    await ensureLocalUserGitIgnore(repoRoot);
+    await node_fs_1.promises.mkdir(node_path_1.default.dirname(filePath), { recursive: true });
+    const current = await loadActionOrder(repoRoot);
+    const next = {
+        actionIds: order.actionIds ? normalizeIdList(order.actionIds) : current.actionIds,
+        headerActionIds: order.headerActionIds ? normalizeIdList(order.headerActionIds) : current.headerActionIds,
+    };
+    await node_fs_1.promises.writeFile(filePath, JSON.stringify(next, null, 2) + "\n", "utf8");
+    return next;
+}
+function actionOrderPath(repoRoot) {
+    return node_path_1.default.join(repoRoot, ENV_DIR, LOCAL_USER_SUBDIR, ACTION_ORDER_FILE);
+}
+async function ensureLocalUserGitIgnore(repoRoot) {
+    const gitIgnorePath = node_path_1.default.join(repoRoot, ENV_DIR, ".gitignore");
+    const localUserIgnoreBlock = [
+        "",
+        "# local-user data (user-specific, not committed to repo)",
+        "**/local-user/**/*",
+        "!**/.keep",
+        "",
+    ].join("\n");
+    try {
+        const existing = await node_fs_1.promises.readFile(gitIgnorePath, "utf8");
+        if (existing.includes("**/local-user/**/*"))
+            return;
+        await node_fs_1.promises.writeFile(gitIgnorePath, `${existing.replace(/\s*$/, "")}\n${localUserIgnoreBlock}`, "utf8");
+    }
+    catch {
+        await node_fs_1.promises.mkdir(node_path_1.default.dirname(gitIgnorePath), { recursive: true });
+        await node_fs_1.promises.writeFile(gitIgnorePath, localUserIgnoreBlock.trimStart(), "utf8");
+    }
+}
+function normalizeIdList(value) {
+    return Array.isArray(value)
+        ? [...new Set(value.filter((id) => typeof id === "string" && id.length > 0))]
+        : [];
 }
 async function loadActionsFromDir(dir, isLocalUser) {
     try {
@@ -129,6 +185,8 @@ function normalizeAction(parsed, isLocalUser = false) {
         pageHeaderOptions: normalizePageHeaderOptions(parsed["pageHeaderOptions"]),
         isLocalUser,
         buttonColor: typeof parsed["buttonColor"] === "string" ? parsed["buttonColor"] : undefined,
+        terminalMode: parsed["terminalMode"] === "pipe" ? "pipe" : parsed["terminalMode"] === "pty" ? "pty" : undefined,
+        runMode: parsed["runMode"] === "background" ? "background" : parsed["runMode"] === "stream" ? "stream" : undefined,
     };
 }
 function normalizePageHeaderOptions(raw) {

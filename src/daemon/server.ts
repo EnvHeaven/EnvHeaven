@@ -26,7 +26,8 @@ import {
   type ArtifactVersionRecord,
   type RepoStateRecord,
 } from "../state/store";
-import { loadActions, saveAction, deleteAction, moveAction, loadArtifactMeta, saveArtifactMeta, normalizePageHeaderOptions, type ActionDefinition } from "../actions/loader";
+import { loadActions, saveAction, deleteAction, moveAction, loadActionOrder, saveActionOrder, loadArtifactMeta, saveArtifactMeta, normalizePageHeaderOptions, type ActionDefinition } from "../actions/loader";
+import { loadPinnedArtifactIds, savePinnedArtifactIds } from "../local-user/preferences";
 import type { RepoModel, SupportedTarget } from "../types";
 
 const SUPPORTED_TARGETS: SupportedTarget[] = ["default", "local", "local-01", "fake-local", "fake-local-01"];
@@ -450,6 +451,29 @@ export async function startDaemon(
         return;
       }
 
+      // ─── GET /api/repos/pinned ───────────────────────────────────────────
+      if (url.pathname === "/api/repos/pinned" && request.method === "GET") {
+        const artifactIds = await loadPinnedArtifactIds(normalizedRootDirectory);
+        sendJson(response, 200, { artifactIds }, true);
+        return;
+      }
+
+      // ─── PUT /api/repos/pinned ───────────────────────────────────────────
+      if (url.pathname === "/api/repos/pinned" && request.method === "PUT") {
+        if (!isTrustedOrigin(request)) {
+          sendJson(response, 403, { error: "Cross-origin mutation requests are not allowed." });
+          return;
+        }
+        const payload = await readJsonBody(request);
+        const artifactIds = Array.isArray(payload.artifactIds)
+          ? payload.artifactIds.filter((id): id is string => typeof id === "string" && id.length > 0)
+          : [];
+        await savePinnedArtifactIds(normalizedRootDirectory, artifactIds);
+        sendJson(response, 200, { ok: true, artifactIds });
+        broadcastEvent({ type: "repos:pinned-updated", payload: { artifactIds } });
+        return;
+      }
+
       // ─── PUT /api/repos/meta ─────────────────────────────────────────────
       if (url.pathname === "/api/repos/meta" && request.method === "PUT") {
         if (!isTrustedOrigin(request)) {
@@ -610,7 +634,35 @@ export async function startDaemon(
         }
         const resolvedActionsRoot = path.resolve(actionsRepoRoot);
         const actions = await loadActions(resolvedActionsRoot);
-        sendJson(response, 200, { repoRoot: resolvedActionsRoot, actions }, true);
+        const actionOrder = await loadActionOrder(resolvedActionsRoot);
+        sendJson(response, 200, { repoRoot: resolvedActionsRoot, actions, actionOrder }, true);
+        return;
+      }
+
+      // ─── PUT /api/actions/order ──────────────────────────────────────────
+      if (url.pathname === "/api/actions/order" && request.method === "PUT") {
+        if (!isTrustedOrigin(request)) {
+          sendJson(response, 403, { error: "Cross-origin mutation requests are not allowed." });
+          return;
+        }
+        const payload = await readJsonBody(request);
+        const orderRepoRoot = typeof payload.repoRoot === "string" ? payload.repoRoot : null;
+        if (!orderRepoRoot) {
+          sendJson(response, 400, { error: "repoRoot is required." });
+          return;
+        }
+        const actionIds = Array.isArray(payload.actionIds)
+          ? payload.actionIds.filter((id): id is string => typeof id === "string" && id.length > 0)
+          : [];
+        const orderScope = payload.scope === "header" ? "header" : "actions";
+        const resolvedOrderRoot = path.resolve(orderRepoRoot);
+        const actionOrder = await saveActionOrder(
+          resolvedOrderRoot,
+          orderScope === "header" ? { headerActionIds: actionIds } : { actionIds },
+        );
+        const actions = await loadActions(resolvedOrderRoot);
+        sendJson(response, 200, { ok: true, repoRoot: resolvedOrderRoot, actions, actionOrder });
+        broadcastEvent({ type: "actions:updated", payload: { repoRoot: resolvedOrderRoot } });
         return;
       }
 
@@ -744,6 +796,7 @@ export async function startDaemon(
           isLocalUser: payload.isLocalUser === true,
           buttonColor: typeof payload.buttonColor === "string" ? payload.buttonColor : undefined,
           terminalMode: payload.terminalMode === "pipe" ? "pipe" : payload.terminalMode === "pty" ? "pty" : undefined,
+          runMode: payload.runMode === "background" ? "background" : payload.runMode === "stream" ? "stream" : undefined,
         };
 
         await saveAction(configRepoRoot, action);
