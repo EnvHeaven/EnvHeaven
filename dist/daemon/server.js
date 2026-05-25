@@ -37,6 +37,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.startDaemon = startDaemon;
+exports.buildVersionPayload = buildVersionPayload;
 const node_child_process_1 = require("node:child_process");
 const node_fs_1 = require("node:fs");
 const node_http_1 = __importDefault(require("node:http"));
@@ -486,6 +487,7 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
                 }
                 const artifactName = typeof payload.artifactName === "string" ? payload.artifactName : "";
                 const packageName = typeof payload.packageName === "string" ? payload.packageName : undefined;
+                const track = normalizeVersionPayloadTrack(payload.track);
                 const nextVersion = typeof payload.nextVersion === "string" ? payload.nextVersion.trim() : undefined;
                 const lastVersion = typeof payload.lastVersion === "string" ? payload.lastVersion.trim() : undefined;
                 if (!artifactName) {
@@ -496,9 +498,9 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
                     sendJson(response, 400, { error: "lastVersion and nextVersion must be valid semantic versions." });
                     return;
                 }
-                const updated = await stateStore.setArtifactVersion(setVersionRepoRoot, artifactName, packageName, { lastVersion, nextVersion });
+                const updated = await stateStore.setArtifactTrackVersion(setVersionRepoRoot, artifactName, packageName, track, { lastVersion, nextVersion });
                 sendJson(response, 200, { ok: true, record: updated });
-                broadcastEvent({ type: "version:set", payload: { artifactName, record: updated } });
+                broadcastEvent({ type: "version:set", payload: { artifactName, packageName, track, record: updated } });
                 return;
             }
             // ─── POST /api/versions/increment ────────────────────────────────────
@@ -976,7 +978,7 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
 }
 async function buildVersionPayload(repoModel, repoRoot, stateStore) {
     const records = await stateStore.getVersionRecords(repoRoot);
-    const recordByArtifact = new Map(records.map((record) => [record.artifactName, record]));
+    const recordByArtifactKey = new Map(records.map((record) => [(0, store_1.buildArtifactKey)(record.artifactName, record.packageName), record]));
     return await Promise.all(Object.entries(repoModel.artifacts)
         .sort((left, right) => left[0].localeCompare(right[0]))
         .map(async ([artifactName, artifactValue]) => {
@@ -984,7 +986,10 @@ async function buildVersionPayload(repoModel, repoRoot, stateStore) {
         const rawRepoCloneFolderPath = artifactValue.RepoCloneFolderPath ?? artifactValue.repoCloneFolderPath;
         const packageName = typeof rawPackageName === "string" ? rawPackageName : undefined;
         const repoCloneFolderPath = typeof rawRepoCloneFolderPath === "string" ? node_path_1.default.resolve(repoRoot, rawRepoCloneFolderPath) : undefined;
-        const registryRecord = recordByArtifact.get(artifactName);
+        const registryRecord = recordByArtifactKey.get((0, store_1.buildArtifactKey)(artifactName, packageName)) ??
+            recordByArtifactKey.get((0, store_1.buildArtifactKey)(artifactName, undefined));
+        const displayTrack = chooseDisplayedVersionTrack(registryRecord);
+        const displayTrackState = (0, store_1.getTrackState)(registryRecord, displayTrack);
         let packageVersion;
         if (repoCloneFolderPath) {
             try {
@@ -999,11 +1004,35 @@ async function buildVersionPayload(repoModel, repoRoot, stateStore) {
             packageName,
             repoCloneFolderPath,
             packageVersion,
-            lastVersion: registryRecord?.lastVersion,
-            nextVersion: registryRecord?.nextVersion ?? packageVersion ?? (0, store_1.incrementPatchVersion)("0.1.0"),
-            suggestedNextVersion: (0, runtime_1.computeNextVersionSuggestion)(registryRecord?.nextVersion ?? registryRecord?.lastVersion ?? packageVersion ?? "0.1.0"),
+            displayTrack,
+            recordKey: (0, store_1.buildArtifactKey)(artifactName, packageName),
+            tracks: registryRecord?.tracks ?? {},
+            lastVersion: displayTrackState?.lastVersion,
+            nextVersion: displayTrackState?.nextVersion ?? packageVersion ?? (0, store_1.incrementPatchVersion)("0.1.0"),
+            suggestedNextVersion: (0, runtime_1.computeNextVersionSuggestion)(displayTrackState?.nextVersion ?? displayTrackState?.lastVersion ?? packageVersion ?? "0.1.0"),
         };
     }));
+}
+function normalizeVersionPayloadTrack(value) {
+    if (value === "exp" || value === "beta" || value === "release") {
+        return value;
+    }
+    return "release";
+}
+function chooseDisplayedVersionTrack(record) {
+    const expState = (0, store_1.getTrackState)(record, "exp");
+    if (expState?.nextVersion || expState?.lastVersion) {
+        return "exp";
+    }
+    const releaseState = (0, store_1.getTrackState)(record, "release");
+    if (releaseState?.nextVersion || releaseState?.lastVersion) {
+        return "release";
+    }
+    const betaState = (0, store_1.getTrackState)(record, "beta");
+    if (betaState?.nextVersion || betaState?.lastVersion) {
+        return "beta";
+    }
+    return "release";
 }
 function normalizeHelperArray(raw) {
     if (!Array.isArray(raw))

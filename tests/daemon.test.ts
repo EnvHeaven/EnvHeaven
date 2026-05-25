@@ -1,9 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import os from "node:os";
 import path from "node:path";
-import { startDaemon } from "../src/daemon/server";
+import { buildVersionPayload, startDaemon } from "../src/daemon/server";
+import { EnvHeavenStateStore, resolveEnvHeavenPaths } from "../src/state/store";
+import type { RepoModel } from "../src/types";
 
 const fixturesRoot = path.join(__dirname, "fixtures");
+
+function makeIsolatedStore(): EnvHeavenStateStore {
+  const stateDir = path.join(os.tmpdir(), `envheaven-daemon-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const paths = resolveEnvHeavenPaths("linux", {
+    XDG_STATE_HOME: stateDir,
+    XDG_CONFIG_HOME: stateDir,
+    XDG_CACHE_HOME: stateDir,
+  });
+  return new EnvHeavenStateStore(paths);
+}
 
 test("serves discovery, plugin status, and plan endpoints", async () => {
   const repoRoot = path.join(fixturesRoot, "repo-basic");
@@ -73,4 +86,53 @@ test("serves status, repo list, and version registry endpoints", async () => {
       server.close((error) => (error ? reject(error) : resolve()));
     });
   }
+});
+
+test("version payload prefers scoped package state over legacy unscoped state", async () => {
+  const repoRoot = "/fake/envheaven-repo";
+  const artifactName = "envheaven-package-01";
+  const packageName = "envheaven";
+  const store = makeIsolatedStore();
+
+  await store.rememberRepo(repoRoot);
+  await store.setArtifactVersion(repoRoot, artifactName, undefined, { nextVersion: "0.1.190" });
+  await store.setArtifactTrackVersion(repoRoot, artifactName, packageName, "release", {
+    lastVersion: "0.1.108",
+    nextVersion: "0.1.109",
+  });
+  await store.setArtifactTrackVersion(repoRoot, artifactName, packageName, "exp", {
+    lastVersion: "0.1.109-exp.36",
+    nextVersion: "0.1.109-exp.37",
+  });
+
+  const repoModel = {
+    rootDirectory: repoRoot,
+    layers: [],
+    envMapLayers: {},
+    artifacts: {
+      [artifactName]: {
+        PackageName: packageName,
+      },
+    },
+    artifactsRunners: {},
+    artifactsDistributors: {},
+    repoDeployExecutions: {},
+    aliases: {},
+    fallbackList: [],
+    diagnostics: [],
+    discovery: {
+      rootDirectory: repoRoot,
+      envDirectories: [],
+      files: [],
+      diagnostics: [],
+    },
+  } as RepoModel;
+
+  const [payload] = await buildVersionPayload(repoModel, repoRoot, store);
+
+  assert.equal(payload?.["artifactName"], artifactName);
+  assert.equal(payload?.["packageName"], packageName);
+  assert.equal(payload?.["displayTrack"], "exp");
+  assert.equal(payload?.["lastVersion"], "0.1.109-exp.36");
+  assert.equal(payload?.["nextVersion"], "0.1.109-exp.37");
 });

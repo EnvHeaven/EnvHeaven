@@ -19,10 +19,13 @@ import { loadPlugin } from "../plugins/loader";
 import { computeNextVersionSuggestion, readPackageMetadata } from "../deploy/runtime";
 import {
   EnvHeavenStateStore,
+  buildArtifactKey,
+  getTrackState,
   incrementPatchVersion,
   incrementMinorVersion,
   incrementExpVersion,
   isValidVersionString,
+  type PersistedVersionTrack,
   type ArtifactVersionRecord,
   type RepoStateRecord,
 } from "../state/store";
@@ -527,6 +530,7 @@ export async function startDaemon(
         }
         const artifactName = typeof payload.artifactName === "string" ? payload.artifactName : "";
         const packageName = typeof payload.packageName === "string" ? payload.packageName : undefined;
+        const track = normalizeVersionPayloadTrack(payload.track);
         const nextVersion = typeof payload.nextVersion === "string" ? payload.nextVersion.trim() : undefined;
         const lastVersion = typeof payload.lastVersion === "string" ? payload.lastVersion.trim() : undefined;
 
@@ -540,9 +544,9 @@ export async function startDaemon(
           return;
         }
 
-        const updated = await stateStore.setArtifactVersion(setVersionRepoRoot, artifactName, packageName, { lastVersion, nextVersion });
+        const updated = await stateStore.setArtifactTrackVersion(setVersionRepoRoot, artifactName, packageName, track, { lastVersion, nextVersion });
         sendJson(response, 200, { ok: true, record: updated });
-        broadcastEvent({ type: "version:set", payload: { artifactName, record: updated } });
+        broadcastEvent({ type: "version:set", payload: { artifactName, packageName, track, record: updated } });
         return;
       }
 
@@ -1063,13 +1067,15 @@ export async function startDaemon(
   return { server, killAllRuns };
 }
 
-async function buildVersionPayload(
+export async function buildVersionPayload(
   repoModel: RepoModel,
   repoRoot: string,
   stateStore: EnvHeavenStateStore,
 ): Promise<Array<Record<string, unknown>>> {
   const records = await stateStore.getVersionRecords(repoRoot);
-  const recordByArtifact = new Map<string, ArtifactVersionRecord>(records.map((record) => [record.artifactName, record]));
+  const recordByArtifactKey = new Map<string, ArtifactVersionRecord>(
+    records.map((record) => [buildArtifactKey(record.artifactName, record.packageName), record]),
+  );
 
   return await Promise.all(
     Object.entries(repoModel.artifacts)
@@ -1080,7 +1086,11 @@ async function buildVersionPayload(
         const packageName = typeof rawPackageName === "string" ? rawPackageName : undefined;
         const repoCloneFolderPath =
           typeof rawRepoCloneFolderPath === "string" ? path.resolve(repoRoot, rawRepoCloneFolderPath) : undefined;
-        const registryRecord = recordByArtifact.get(artifactName);
+        const registryRecord =
+          recordByArtifactKey.get(buildArtifactKey(artifactName, packageName)) ??
+          recordByArtifactKey.get(buildArtifactKey(artifactName, undefined));
+        const displayTrack = chooseDisplayedVersionTrack(registryRecord);
+        const displayTrackState = getTrackState(registryRecord, displayTrack);
 
         let packageVersion: string | undefined;
         if (repoCloneFolderPath) {
@@ -1096,14 +1106,40 @@ async function buildVersionPayload(
           packageName,
           repoCloneFolderPath,
           packageVersion,
-          lastVersion: registryRecord?.lastVersion,
-          nextVersion: registryRecord?.nextVersion ?? packageVersion ?? incrementPatchVersion("0.1.0"),
+          displayTrack,
+          recordKey: buildArtifactKey(artifactName, packageName),
+          tracks: registryRecord?.tracks ?? {},
+          lastVersion: displayTrackState?.lastVersion,
+          nextVersion: displayTrackState?.nextVersion ?? packageVersion ?? incrementPatchVersion("0.1.0"),
           suggestedNextVersion: computeNextVersionSuggestion(
-            registryRecord?.nextVersion ?? registryRecord?.lastVersion ?? packageVersion ?? "0.1.0",
+            displayTrackState?.nextVersion ?? displayTrackState?.lastVersion ?? packageVersion ?? "0.1.0",
           ),
         };
       }),
   );
+}
+
+function normalizeVersionPayloadTrack(value: unknown): PersistedVersionTrack {
+  if (value === "exp" || value === "beta" || value === "release") {
+    return value;
+  }
+  return "release";
+}
+
+function chooseDisplayedVersionTrack(record: ArtifactVersionRecord | null | undefined): PersistedVersionTrack {
+  const expState = getTrackState(record, "exp");
+  if (expState?.nextVersion || expState?.lastVersion) {
+    return "exp";
+  }
+  const releaseState = getTrackState(record, "release");
+  if (releaseState?.nextVersion || releaseState?.lastVersion) {
+    return "release";
+  }
+  const betaState = getTrackState(record, "beta");
+  if (betaState?.nextVersion || betaState?.lastVersion) {
+    return "beta";
+  }
+  return "release";
 }
 
 function normalizeHelperArray(raw: unknown): ActionDefinition["successHelpers"] {
