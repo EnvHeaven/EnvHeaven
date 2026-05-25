@@ -19,6 +19,7 @@ import { loadPlugin } from "../plugins/loader";
 import { computeNextVersionSuggestion, readPackageMetadata } from "../deploy/runtime";
 import {
   EnvHeavenStateStore,
+  PERSISTED_VERSION_TRACKS,
   buildArtifactKey,
   getTrackState,
   incrementPatchVersion,
@@ -1120,24 +1121,18 @@ export async function buildVersionPayload(
 }
 
 function normalizeVersionPayloadTrack(value: unknown): PersistedVersionTrack {
-  if (value === "exp" || value === "beta" || value === "release") {
-    return value;
+  if (typeof value === "string" && PERSISTED_VERSION_TRACKS.includes(value as PersistedVersionTrack)) {
+    return value as PersistedVersionTrack;
   }
   return "release";
 }
 
 function chooseDisplayedVersionTrack(record: ArtifactVersionRecord | null | undefined): PersistedVersionTrack {
-  const expState = getTrackState(record, "exp");
-  if (expState?.nextVersion || expState?.lastVersion) {
-    return "exp";
-  }
-  const releaseState = getTrackState(record, "release");
-  if (releaseState?.nextVersion || releaseState?.lastVersion) {
-    return "release";
-  }
-  const betaState = getTrackState(record, "beta");
-  if (betaState?.nextVersion || betaState?.lastVersion) {
-    return "beta";
+  for (const track of PERSISTED_VERSION_TRACKS) {
+    const trackState = getTrackState(record, track);
+    if (trackState?.nextVersion || trackState?.lastVersion) {
+      return track;
+    }
   }
   return "release";
 }

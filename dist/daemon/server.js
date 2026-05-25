@@ -1014,23 +1014,17 @@ async function buildVersionPayload(repoModel, repoRoot, stateStore) {
     }));
 }
 function normalizeVersionPayloadTrack(value) {
-    if (value === "exp" || value === "beta" || value === "release") {
+    if (typeof value === "string" && store_1.PERSISTED_VERSION_TRACKS.includes(value)) {
         return value;
     }
     return "release";
 }
 function chooseDisplayedVersionTrack(record) {
-    const expState = (0, store_1.getTrackState)(record, "exp");
-    if (expState?.nextVersion || expState?.lastVersion) {
-        return "exp";
-    }
-    const releaseState = (0, store_1.getTrackState)(record, "release");
-    if (releaseState?.nextVersion || releaseState?.lastVersion) {
-        return "release";
-    }
-    const betaState = (0, store_1.getTrackState)(record, "beta");
-    if (betaState?.nextVersion || betaState?.lastVersion) {
-        return "beta";
+    for (const track of store_1.PERSISTED_VERSION_TRACKS) {
+        const trackState = (0, store_1.getTrackState)(record, track);
+        if (trackState?.nextVersion || trackState?.lastVersion) {
+            return track;
+        }
     }
     return "release";
 }

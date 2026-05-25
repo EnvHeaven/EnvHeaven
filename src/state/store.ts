@@ -49,7 +49,8 @@ export interface ResolvedArtifactVersion {
 }
 
 export type VersionTrack = "patch" | "minor" | "exp" | "beta";
-export type PersistedVersionTrack = "release" | "exp" | "beta";
+export const PERSISTED_VERSION_TRACKS = ["exp", "canary", "alpha", "beta", "rc", "release"] as const;
+export type PersistedVersionTrack = (typeof PERSISTED_VERSION_TRACKS)[number];
 
 export class EnvHeavenStateStore {
   private cache: EnvHeavenStateFile | null = null;
@@ -303,14 +304,12 @@ export class EnvHeavenStateStore {
       lastVersion: deployedVersion,
       nextVersion: nextReleaseVersion,
     });
-    await this.setArtifactTrackVersion(repoRoot, artifactName, packageName, "exp", {
-      lastVersion: undefined,
-      nextVersion: derivePrereleaseFromReleaseBase(nextReleaseVersion, "exp"),
-    });
-    await this.setArtifactTrackVersion(repoRoot, artifactName, packageName, "beta", {
-      lastVersion: undefined,
-      nextVersion: derivePrereleaseFromReleaseBase(nextReleaseVersion, "beta"),
-    });
+    for (const prereleaseTrack of PERSISTED_VERSION_TRACKS.filter((track) => track !== "release")) {
+      await this.setArtifactTrackVersion(repoRoot, artifactName, packageName, prereleaseTrack, {
+        lastVersion: undefined,
+        nextVersion: derivePrereleaseFromReleaseBase(nextReleaseVersion, prereleaseTrack),
+      });
+    }
     return await this.setReleaseTrackVersion(repoRoot, artifactName, packageName, {
       lastVersion: deployedVersion,
       nextVersion: nextReleaseVersion,
@@ -583,34 +582,23 @@ function normalizeTrackStates(
   value: Record<string, any>,
 ): Partial<Record<PersistedVersionTrack, ArtifactVersionTrackState>> {
   const tracksValue = isRecord(value.tracks) ? (value.tracks as Record<string, unknown>) : {};
-  let releaseState = normalizeSingleTrackState(tracksValue["release"]);
-  let expState = normalizeSingleTrackState(tracksValue["exp"]);
-  let betaState = normalizeSingleTrackState(tracksValue["beta"]);
+  const states = Object.fromEntries(
+    PERSISTED_VERSION_TRACKS.map((track) => [track, normalizeSingleTrackState(tracksValue[track])]),
+  ) as Record<PersistedVersionTrack, ArtifactVersionTrackState>;
   const legacyLastVersion = typeof value.lastVersion === "string" ? value.lastVersion : undefined;
   const legacyNextVersion = typeof value.nextVersion === "string" ? value.nextVersion : undefined;
   const legacyUpdatedAt = typeof value.updatedAt === "string" ? value.updatedAt : undefined;
   const legacyTrack = detectLegacyTrack(legacyNextVersion ?? legacyLastVersion);
-  const fallbackRelease: ArtifactVersionTrackState =
-    legacyTrack === "release"
-      ? {
-          lastVersion: legacyLastVersion,
-          nextVersion: legacyNextVersion,
-          updatedAt: legacyUpdatedAt,
-        }
-      : {
-          nextVersion: stripPrereleaseToStable(legacyNextVersion ?? legacyLastVersion),
-          updatedAt: legacyUpdatedAt,
-        };
-  const fallbackExp: ArtifactVersionTrackState =
-    legacyTrack === "exp"
-      ? {
-          lastVersion: legacyLastVersion,
-          nextVersion: legacyNextVersion,
-          updatedAt: legacyUpdatedAt,
-        }
-      : {};
-  const fallbackBeta: ArtifactVersionTrackState =
-    legacyTrack === "beta"
+  const fallbackRelease: ArtifactVersionTrackState = {
+    nextVersion:
+      legacyTrack === "release"
+        ? legacyNextVersion
+        : stripPrereleaseToStable(legacyNextVersion ?? legacyLastVersion),
+    lastVersion: legacyTrack === "release" ? legacyLastVersion : undefined,
+    updatedAt: legacyUpdatedAt,
+  };
+  const fallbackTrack: ArtifactVersionTrackState =
+    legacyTrack !== "release"
       ? {
           lastVersion: legacyLastVersion,
           nextVersion: legacyNextVersion,
@@ -618,65 +606,55 @@ function normalizeTrackStates(
         }
       : {};
 
-  releaseState =
-    releaseState.lastVersion || releaseState.nextVersion
-      ? releaseState
+  states.release =
+    states.release.lastVersion || states.release.nextVersion
+      ? states.release
       : fallbackRelease.lastVersion || fallbackRelease.nextVersion
       ? fallbackRelease
       : {};
-  expState =
-    expState.lastVersion || expState.nextVersion
-      ? expState
-      : fallbackExp.nextVersion || fallbackExp.lastVersion
-      ? fallbackExp
-      : {};
-  betaState =
-    betaState.lastVersion || betaState.nextVersion
-      ? betaState
-      : fallbackBeta.nextVersion || fallbackBeta.lastVersion
-      ? fallbackBeta
-      : {};
+  if (legacyTrack !== "release") {
+    states[legacyTrack] =
+      states[legacyTrack].lastVersion || states[legacyTrack].nextVersion
+        ? states[legacyTrack]
+        : fallbackTrack.nextVersion || fallbackTrack.lastVersion
+        ? fallbackTrack
+        : {};
+  }
 
   // Repair older records where prerelease values were accidentally written
   // into the hidden release lane. Move them back to their real lane and keep
   // the release lane on the stable base.
-  const releaseLaneType = detectLegacyTrack(releaseState.nextVersion ?? releaseState.lastVersion);
-  if (releaseLaneType === "exp") {
-    if (!expState.lastVersion && !expState.nextVersion) {
-      expState = { ...releaseState };
+  const releaseLaneType = detectLegacyTrack(states.release.nextVersion ?? states.release.lastVersion);
+  if (releaseLaneType !== "release") {
+    if (!states[releaseLaneType].lastVersion && !states[releaseLaneType].nextVersion) {
+      states[releaseLaneType] = { ...states.release };
     }
-    releaseState = deriveReleaseStateFromPrerelease(releaseState);
-  } else if (releaseLaneType === "beta") {
-    if (!betaState.lastVersion && !betaState.nextVersion) {
-      betaState = { ...releaseState };
-    }
-    releaseState = deriveReleaseStateFromPrerelease(releaseState);
+    states.release = deriveReleaseStateFromPrerelease(states.release);
   }
 
   const prereleaseBase = stripPrereleaseToStable(
-    expState.nextVersion ??
-      expState.lastVersion ??
-      betaState.nextVersion ??
-      betaState.lastVersion,
+    PERSISTED_VERSION_TRACKS.filter((track) => track !== "release")
+      .flatMap((track) => [states[track].nextVersion, states[track].lastVersion])
+      .find((entry): entry is string => typeof entry === "string"),
   );
   if (
-    releaseState.lastVersion &&
-    releaseState.nextVersion &&
-    releaseState.lastVersion === releaseState.nextVersion &&
-    prereleaseBase === releaseState.nextVersion
+    states.release.lastVersion &&
+    states.release.nextVersion &&
+    states.release.lastVersion === states.release.nextVersion &&
+    prereleaseBase === states.release.nextVersion
   ) {
-    releaseState = {
-      lastVersion: decrementPatchVersion(releaseState.nextVersion),
-      nextVersion: releaseState.nextVersion,
-      updatedAt: releaseState.updatedAt,
+    states.release = {
+      lastVersion: decrementPatchVersion(states.release.nextVersion),
+      nextVersion: states.release.nextVersion,
+      updatedAt: states.release.updatedAt,
     };
   }
 
-  return {
-    release: releaseState.lastVersion || releaseState.nextVersion ? releaseState : undefined,
-    exp: expState.lastVersion || expState.nextVersion ? expState : undefined,
-    beta: betaState.lastVersion || betaState.nextVersion ? betaState : undefined,
-  };
+  return Object.fromEntries(
+    PERSISTED_VERSION_TRACKS.flatMap((track) =>
+      states[track].lastVersion || states[track].nextVersion ? [[track, states[track]]] : [],
+    ),
+  ) as Partial<Record<PersistedVersionTrack, ArtifactVersionTrackState>>;
 }
 
 function normalizeSingleTrackState(value: unknown): ArtifactVersionTrackState {
@@ -746,39 +724,58 @@ function withTrackUpdates(
 function derivePrereleaseFromReleaseBase(version: string, track: Exclude<PersistedVersionTrack, "release">): string {
   const parsed = parseVersion(version);
   if (parsed) {
-    return track === "exp"
-      ? `${parsed.major}.${parsed.minor}.${parsed.patch}-exp.0`
-      : `${parsed.major}.${parsed.minor}.${parsed.patch}-beta.0`;
+    return `${parsed.major}.${parsed.minor}.${parsed.patch}-${track}.0`;
   }
-  return track === "exp" ? incrementExpVersion(version) : incrementBetaVersion(version);
+  return incrementPrereleaseVersion(version, track);
 }
 
 function detectLegacyTrack(version: string | undefined): PersistedVersionTrack {
   if (!version) {
     return "release";
   }
-  if (parseExpVersion(version)) {
-    return "exp";
-  }
-  if (parseBetaVersion(version)) {
-    return "beta";
-  }
-  return "release";
+  return parseKnownPrereleaseVersion(version)?.track ?? "release";
 }
 
 function stripPrereleaseToStable(version: string | undefined): string | undefined {
   if (!version) {
     return undefined;
   }
-  const exp = parseExpVersion(version);
-  if (exp) {
-    return `${exp.major}.${exp.minor}.${exp.patch}`;
-  }
-  const beta = parseBetaVersion(version);
-  if (beta) {
-    return `${beta.major}.${beta.minor}.${beta.patch}`;
+  const prerelease = parseKnownPrereleaseVersion(version);
+  if (prerelease) {
+    return `${prerelease.major}.${prerelease.minor}.${prerelease.patch}`;
   }
   return version;
+}
+
+function parseKnownPrereleaseVersion(
+  value: string,
+): { major: number; minor: number; patch: number; track: Exclude<PersistedVersionTrack, "release">; ordinal: number } | null {
+  const labels = PERSISTED_VERSION_TRACKS.filter((track) => track !== "release").join("|");
+  const match = new RegExp(
+    `^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)[.-](${labels})\\.(0|[1-9]\\d*)$`,
+  ).exec(value.trim());
+  if (!match) {
+    return null;
+  }
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    track: match[4] as Exclude<PersistedVersionTrack, "release">,
+    ordinal: Number(match[5]),
+  };
+}
+
+function incrementPrereleaseVersion(version: string, track: Exclude<PersistedVersionTrack, "release">): string {
+  const prerelease = parseKnownPrereleaseVersion(version);
+  if (prerelease && prerelease.track === track) {
+    return `${prerelease.major}.${prerelease.minor}.${prerelease.patch}-${track}.${prerelease.ordinal + 1}`;
+  }
+  const parsed = parseVersion(version);
+  if (parsed) {
+    return `${parsed.major}.${parsed.minor}.${parsed.patch + 1}-${track}.0`;
+  }
+  return `0.1.1-${track}.0`;
 }
 
 function deriveReleaseStateFromPrerelease(prereleaseState: ArtifactVersionTrackState): ArtifactVersionTrackState {

@@ -274,3 +274,20 @@ test("normalization repairs half-repaired records with matching release last/nex
   assert.equal(getTrackState(repaired, "release")?.nextVersion, "0.1.4");
   assert.equal(getTrackState(repaired, "exp")?.nextVersion, "0.1.4-exp.2");
 });
+
+test("tracks support canary alpha beta rc and release lanes", async () => {
+  const { store } = makeIsolatedStore();
+  const repoRoot = "/fake/repo";
+  const artifactName = "lane-artifact";
+
+  await store.rememberRepo(repoRoot);
+  await store.setArtifactTrackVersion(repoRoot, artifactName, undefined, "canary", { nextVersion: "1.2.3-canary.0" });
+  await store.setArtifactTrackVersion(repoRoot, artifactName, undefined, "alpha", { nextVersion: "1.2.3-alpha.0" });
+  await store.setArtifactTrackVersion(repoRoot, artifactName, undefined, "rc", { nextVersion: "1.2.3-rc.0" });
+
+  const record = await store.getVersionRecord(repoRoot, artifactName, undefined);
+
+  assert.equal(getTrackState(record, "canary")?.nextVersion, "1.2.3-canary.0");
+  assert.equal(getTrackState(record, "alpha")?.nextVersion, "1.2.3-alpha.0");
+  assert.equal(getTrackState(record, "rc")?.nextVersion, "1.2.3-rc.0");
+});

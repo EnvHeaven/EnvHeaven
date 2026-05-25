@@ -36,7 +36,8 @@ export interface ResolvedArtifactVersion {
     record?: ArtifactVersionRecord;
 }
 export type VersionTrack = "patch" | "minor" | "exp" | "beta";
-export type PersistedVersionTrack = "release" | "exp" | "beta";
+export declare const PERSISTED_VERSION_TRACKS: readonly ["exp", "canary", "alpha", "beta", "rc", "release"];
+export type PersistedVersionTrack = (typeof PERSISTED_VERSION_TRACKS)[number];
 export declare class EnvHeavenStateStore {
     private readonly paths;
     private cache;
