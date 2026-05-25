@@ -1,6 +1,6 @@
 {
   "name": "envheaven",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Small publishable CLI for discovering and resolving envheaven env-repos.",
   "license": "MIT",
   "type": "commonjs",
