@@ -40,6 +40,7 @@ exports.executeCliChallenge = executeCliChallenge;
 exports.buildWebUiChallengePayload = buildWebUiChallengePayload;
 exports.validateWebUiChallengeResponse = validateWebUiChallengeResponse;
 exports.readLineFromStreams = readLineFromStreams;
+exports.shouldUseTerminalReadline = shouldUseTerminalReadline;
 const readline = __importStar(require("node:readline"));
 const diagnostics_1 = require("../diagnostics");
 const LOCAL_TARGETS = new Set([
@@ -132,11 +133,12 @@ function validateWebUiChallengeResponse(requirement, response) {
     diagnostics.push((0, diagnostics_1.createDiagnostic)("error", "challenge-failed", `Challenge response "${trimmed}" does not match expected "${requirement.phrase}". Deploy aborted.`));
     return { passed: false, diagnostics, requirement };
 }
-function readLineFromStreams(input = process.stdin, _output = process.stdout) {
+function readLineFromStreams(input = process.stdin, output = process.stdout) {
     return new Promise((resolve) => {
         const rl = readline.createInterface({
             input,
-            terminal: false,
+            output,
+            terminal: shouldUseTerminalReadline(input, output),
         });
         let settled = false;
         const settle = (value) => {
@@ -154,4 +156,8 @@ function readLineFromStreams(input = process.stdin, _output = process.stdout) {
             settle("");
         });
     });
+}
+function shouldUseTerminalReadline(input, output) {
+    return Boolean(input.isTTY &&
+        output.isTTY);
 }

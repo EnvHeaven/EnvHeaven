@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
@@ -71,6 +72,7 @@ interface PtyRun {
   helpers: ActionDefinition["successHelpers"];
   ptyProcess: import("node-pty").IPty | null;
   wsClients: Set<WebSocket>;
+  displayPrelude: string;
   replayBuffer: string[];
   replayBytes: number;
 }
@@ -83,6 +85,14 @@ function readOwnPackageVersion(): string {
   } catch {
     return "0.1.0";
   }
+}
+
+function buildPtyDisplayPrelude(repoRoot: string, runCommand: string): string {
+  const username = os.userInfo().username || "user";
+  const hostname = os.hostname() || "localhost";
+  const promptSymbol = process.platform === "win32" ? ">" : "$";
+  const safeCommand = runCommand.replace(/\s*\r?\n\s*/g, " && ").trim();
+  return `\x1b[90m${username}@${hostname}:${repoRoot}${promptSymbol} ${safeCommand}\x1b[0m\r\n`;
 }
 
 export async function startDaemon(
@@ -280,6 +290,7 @@ export async function startDaemon(
       helpers: [],
       ptyProcess,
       wsClients: new Set(),
+      displayPrelude: buildPtyDisplayPrelude(repoRoot, action.runCommand),
       replayBuffer: [],
       replayBytes: 0,
     };
@@ -1001,6 +1012,10 @@ export async function startDaemon(
     }
 
     run.wsClients.add(ws);
+
+    if (run.displayPrelude) {
+      ws.send(JSON.stringify({ type: "prelude", data: run.displayPrelude }));
+    }
 
     for (const chunk of run.replayBuffer) {
       ws.send(JSON.stringify({ type: "output", data: chunk }));

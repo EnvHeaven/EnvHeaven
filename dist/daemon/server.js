@@ -41,6 +41,7 @@ exports.buildVersionPayload = buildVersionPayload;
 const node_child_process_1 = require("node:child_process");
 const node_fs_1 = require("node:fs");
 const node_http_1 = __importDefault(require("node:http"));
+const node_os_1 = __importDefault(require("node:os"));
 const node_path_1 = __importDefault(require("node:path"));
 const node_crypto_1 = require("node:crypto");
 const ws_1 = require("ws");
@@ -71,6 +72,13 @@ function readOwnPackageVersion() {
     catch {
         return "0.1.0";
     }
+}
+function buildPtyDisplayPrelude(repoRoot, runCommand) {
+    const username = node_os_1.default.userInfo().username || "user";
+    const hostname = node_os_1.default.hostname() || "localhost";
+    const promptSymbol = process.platform === "win32" ? ">" : "$";
+    const safeCommand = runCommand.replace(/\s*\r?\n\s*/g, " && ").trim();
+    return `\x1b[90m${username}@${hostname}:${repoRoot}${promptSymbol} ${safeCommand}\x1b[0m\r\n`;
 }
 async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.EnvHeavenStateStore(), daemonVersion) {
     const resolvedDaemonVersion = daemonVersion ?? readOwnPackageVersion();
@@ -252,6 +260,7 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
             helpers: [],
             ptyProcess,
             wsClients: new Set(),
+            displayPrelude: buildPtyDisplayPrelude(repoRoot, action.runCommand),
             replayBuffer: [],
             replayBytes: 0,
         };
@@ -914,6 +923,9 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
             return;
         }
         run.wsClients.add(ws);
+        if (run.displayPrelude) {
+            ws.send(JSON.stringify({ type: "prelude", data: run.displayPrelude }));
+        }
         for (const chunk of run.replayBuffer) {
             ws.send(JSON.stringify({ type: "output", data: chunk }));
         }

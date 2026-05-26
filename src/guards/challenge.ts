@@ -183,12 +183,13 @@ export function validateWebUiChallengeResponse(
 
 export function readLineFromStreams(
   input: Readable = process.stdin,
-  _output: Writable = process.stdout,
+  output: Writable = process.stdout,
 ): Promise<string> {
   return new Promise((resolve) => {
     const rl = readline.createInterface({
       input,
-      terminal: false,
+      output,
+      terminal: shouldUseTerminalReadline(input, output),
     });
     let settled = false;
 
@@ -208,4 +209,11 @@ export function readLineFromStreams(
       settle("");
     });
   });
+}
+
+export function shouldUseTerminalReadline(input: Readable, output: Writable): boolean {
+  return Boolean(
+    (input as Readable & { isTTY?: boolean }).isTTY &&
+    (output as Writable & { isTTY?: boolean }).isTTY,
+  );
 }

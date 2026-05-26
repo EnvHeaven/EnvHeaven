@@ -21,4 +21,5 @@ export declare function buildChallengeFromResolvedModel(resolvedModel: Record<st
 export declare function executeCliChallenge(requirement: ChallengeRequirement): Promise<ChallengeGuardResult>;
 export declare function buildWebUiChallengePayload(requirement: ChallengeRequirement): Record<string, unknown>;
 export declare function validateWebUiChallengeResponse(requirement: ChallengeRequirement, response: string): ChallengeGuardResult;
-export declare function readLineFromStreams(input?: Readable, _output?: Writable): Promise<string>;
+export declare function readLineFromStreams(input?: Readable, output?: Writable): Promise<string>;
+export declare function shouldUseTerminalReadline(input: Readable, output: Writable): boolean;

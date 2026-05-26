@@ -6,6 +6,7 @@ import {
   buildChallengeFromResolvedModel,
   buildWebUiChallengePayload,
   readLineFromStreams,
+  shouldUseTerminalReadline,
   validateWebUiChallengeResponse,
 } from "../src/guards/challenge";
 
@@ -203,5 +204,20 @@ describe("readLineFromStreams", () => {
     const result = await promise;
     assert.strictEqual(result, "development-53\b8");
     assert.strictEqual(captured, "");
+  });
+
+  it("uses terminal readline only when both streams are TTYs", () => {
+    const ttyInput = new PassThrough() as PassThrough & { isTTY?: boolean };
+    const ttyOutput = new PassThrough() as PassThrough & { isTTY?: boolean };
+    const pipeInput = new PassThrough();
+    const pipeOutput = new PassThrough();
+
+    ttyInput.isTTY = true;
+    ttyOutput.isTTY = true;
+
+    assert.strictEqual(shouldUseTerminalReadline(ttyInput, ttyOutput), true);
+    assert.strictEqual(shouldUseTerminalReadline(ttyInput, pipeOutput), false);
+    assert.strictEqual(shouldUseTerminalReadline(pipeInput, ttyOutput), false);
+    assert.strictEqual(shouldUseTerminalReadline(pipeInput, pipeOutput), false);
   });
 });
