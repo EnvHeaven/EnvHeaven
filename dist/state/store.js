@@ -87,34 +87,61 @@ class EnvHeavenStateStore {
         const repos = repoRoot
             ? [state.repos[buildRepoId(repoRoot)]].filter((repo) => Boolean(repo))
             : Object.values(state.repos);
-        return repos
+        const scopedPresets = repos
             .flatMap((repo) => Object.values(repo.controlPanelPresets ?? {}))
-            .filter((preset) => !artifactId || preset.artifactId === artifactId)
+            .filter((preset) => !artifactId || preset.artifactId === artifactId);
+        const globalPresets = repoRoot ? [] : Object.values(state.globalControlPanelPresets ?? {})
+            .filter((preset) => !artifactId || preset.artifactId === artifactId);
+        return [...globalPresets, ...scopedPresets]
             .sort((left, right) => left.name.localeCompare(right.name));
     }
     async upsertControlPanelPreset(repoRoot, preset) {
-        await this.rememberRepo(repoRoot);
         const state = await this.loadState(true);
-        const repoRecord = state.repos[buildRepoId(repoRoot)];
         const now = Date.now();
-        const existing = repoRecord.controlPanelPresets[preset.id];
+        const existing = repoRoot
+            ? state.repos[buildRepoId(repoRoot)]?.controlPanelPresets[preset.id]
+            : state.globalControlPanelPresets[preset.id];
         const nextPreset = {
             ...preset,
             repoRoot,
             createdAt: existing?.createdAt ?? preset.createdAt ?? now,
             updatedAt: now,
         };
-        repoRecord.controlPanelPresets[preset.id] = nextPreset;
-        repoRecord.updatedAt = new Date(now).toISOString();
+        if (repoRoot) {
+            const repoId = buildRepoId(repoRoot);
+            const repoRecord = state.repos[repoId] ?? {
+                repoId,
+                repoRoot,
+                artifacts: {},
+                controlPanelPresets: {},
+                updatedAt: new Date(now).toISOString(),
+            };
+            repoRecord.controlPanelPresets[preset.id] = nextPreset;
+            repoRecord.updatedAt = new Date(now).toISOString();
+            state.repos[repoRecord.repoId] = repoRecord;
+            state.recentRepoIds = [repoId, ...state.recentRepoIds.filter((entry) => entry !== repoId)].slice(0, 25);
+            state.selectedRepoId ??= repoId;
+        }
+        else {
+            delete nextPreset.repoRoot;
+            state.globalControlPanelPresets[preset.id] = nextPreset;
+        }
         await this.saveState(state);
         return nextPreset;
     }
     async deleteControlPanelPreset(repoRoot, presetId) {
-        await this.rememberRepo(repoRoot);
         const state = await this.loadState(true);
+        if (!repoRoot) {
+            const existed = presetId in state.globalControlPanelPresets;
+            if (existed) {
+                delete state.globalControlPanelPresets[presetId];
+                await this.saveState(state);
+            }
+            return existed;
+        }
         const repoRecord = state.repos[buildRepoId(repoRoot)];
-        const existed = presetId in repoRecord.controlPanelPresets;
-        if (existed) {
+        const existed = Boolean(repoRecord && presetId in repoRecord.controlPanelPresets);
+        if (existed && repoRecord) {
             delete repoRecord.controlPanelPresets[presetId];
             repoRecord.updatedAt = new Date().toISOString();
             await this.saveState(state);
@@ -298,6 +325,7 @@ class EnvHeavenStateStore {
             schemaVersion: STATE_SCHEMA_VERSION,
             recentRepoIds: [],
             repos: {},
+            globalControlPanelPresets: {},
         };
         this.cache = emptyState;
         await this.saveState(emptyState);
@@ -440,6 +468,7 @@ function isValidExpVersionString(value) {
 }
 function normalizeStateFile(input) {
     const repos = isRecord(input.repos) ? input.repos : {};
+    const globalControlPanelPresets = normalizeControlPanelPresets(input.globalControlPanelPresets, undefined);
     const normalizedRepos = {};
     for (const [repoId, repoValue] of Object.entries(repos)) {
         if (!isRecord(repoValue) || typeof repoValue.repoRoot !== "string") {
@@ -476,6 +505,7 @@ function normalizeStateFile(input) {
         selectedRepoId: typeof input.selectedRepoId === "string" ? input.selectedRepoId : undefined,
         recentRepoIds: recentRepoIds.filter((repoId) => repoId in normalizedRepos),
         repos: normalizedRepos,
+        globalControlPanelPresets,
     };
 }
 function normalizeControlPanelPresets(value, repoRoot) {

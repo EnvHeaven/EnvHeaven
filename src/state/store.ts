@@ -42,6 +42,7 @@ export interface EnvHeavenStateFile {
   selectedRepoId?: string;
   recentRepoIds: string[];
   repos: Record<string, RepoStateRecord>;
+  globalControlPanelPresets: Record<string, ControlPanelPreset>;
 }
 
 export interface ResolvedArtifactVersion {
@@ -121,18 +122,22 @@ export class EnvHeavenStateStore {
       ? [state.repos[buildRepoId(repoRoot)]].filter((repo): repo is RepoStateRecord => Boolean(repo))
       : Object.values(state.repos);
 
-    return repos
+    const scopedPresets = repos
       .flatMap((repo) => Object.values(repo.controlPanelPresets ?? {}))
-      .filter((preset) => !artifactId || preset.artifactId === artifactId)
+      .filter((preset) => !artifactId || preset.artifactId === artifactId);
+    const globalPresets = repoRoot ? [] : Object.values(state.globalControlPanelPresets ?? {})
+      .filter((preset) => !artifactId || preset.artifactId === artifactId);
+
+    return [...globalPresets, ...scopedPresets]
       .sort((left, right) => left.name.localeCompare(right.name));
   }
 
-  async upsertControlPanelPreset(repoRoot: string, preset: ControlPanelPreset): Promise<ControlPanelPreset> {
-    await this.rememberRepo(repoRoot);
+  async upsertControlPanelPreset(repoRoot: string | undefined, preset: ControlPanelPreset): Promise<ControlPanelPreset> {
     const state = await this.loadState(true);
-    const repoRecord = state.repos[buildRepoId(repoRoot)] as RepoStateRecord;
     const now = Date.now();
-    const existing = repoRecord.controlPanelPresets[preset.id];
+    const existing = repoRoot
+      ? state.repos[buildRepoId(repoRoot)]?.controlPanelPresets[preset.id]
+      : state.globalControlPanelPresets[preset.id];
     const nextPreset: ControlPanelPreset = {
       ...preset,
       repoRoot,
@@ -140,18 +145,42 @@ export class EnvHeavenStateStore {
       updatedAt: now,
     };
 
-    repoRecord.controlPanelPresets[preset.id] = nextPreset;
-    repoRecord.updatedAt = new Date(now).toISOString();
+    if (repoRoot) {
+      const repoId = buildRepoId(repoRoot);
+      const repoRecord = state.repos[repoId] ?? {
+        repoId,
+        repoRoot,
+        artifacts: {},
+        controlPanelPresets: {},
+        updatedAt: new Date(now).toISOString(),
+      };
+      repoRecord.controlPanelPresets[preset.id] = nextPreset;
+      repoRecord.updatedAt = new Date(now).toISOString();
+      state.repos[repoRecord.repoId] = repoRecord;
+      state.recentRepoIds = [repoId, ...state.recentRepoIds.filter((entry) => entry !== repoId)].slice(0, 25);
+      state.selectedRepoId ??= repoId;
+    } else {
+      delete nextPreset.repoRoot;
+      state.globalControlPanelPresets[preset.id] = nextPreset;
+    }
     await this.saveState(state);
     return nextPreset;
   }
 
-  async deleteControlPanelPreset(repoRoot: string, presetId: string): Promise<boolean> {
-    await this.rememberRepo(repoRoot);
+  async deleteControlPanelPreset(repoRoot: string | undefined, presetId: string): Promise<boolean> {
     const state = await this.loadState(true);
-    const repoRecord = state.repos[buildRepoId(repoRoot)] as RepoStateRecord;
-    const existed = presetId in repoRecord.controlPanelPresets;
-    if (existed) {
+    if (!repoRoot) {
+      const existed = presetId in state.globalControlPanelPresets;
+      if (existed) {
+        delete state.globalControlPanelPresets[presetId];
+        await this.saveState(state);
+      }
+      return existed;
+    }
+
+    const repoRecord = state.repos[buildRepoId(repoRoot)];
+    const existed = Boolean(repoRecord && presetId in repoRecord.controlPanelPresets);
+    if (existed && repoRecord) {
       delete repoRecord.controlPanelPresets[presetId];
       repoRecord.updatedAt = new Date().toISOString();
       await this.saveState(state);
@@ -414,6 +443,7 @@ export class EnvHeavenStateStore {
       schemaVersion: STATE_SCHEMA_VERSION,
       recentRepoIds: [],
       repos: {},
+      globalControlPanelPresets: {},
     };
     this.cache = emptyState;
     await this.saveState(emptyState);
@@ -581,6 +611,7 @@ export function isValidExpVersionString(value: string): boolean {
 
 function normalizeStateFile(input: Partial<EnvHeavenStateFile>): EnvHeavenStateFile {
   const repos = isRecord(input.repos) ? input.repos : {};
+  const globalControlPanelPresets = normalizeControlPanelPresets(input.globalControlPanelPresets, undefined);
   const normalizedRepos: Record<string, RepoStateRecord> = {};
 
   for (const [repoId, repoValue] of Object.entries(repos)) {
@@ -624,10 +655,11 @@ function normalizeStateFile(input: Partial<EnvHeavenStateFile>): EnvHeavenStateF
     selectedRepoId: typeof input.selectedRepoId === "string" ? input.selectedRepoId : undefined,
     recentRepoIds: recentRepoIds.filter((repoId) => repoId in normalizedRepos),
     repos: normalizedRepos,
+    globalControlPanelPresets,
   };
 }
 
-function normalizeControlPanelPresets(value: unknown, repoRoot: string): Record<string, ControlPanelPreset> {
+function normalizeControlPanelPresets(value: unknown, repoRoot: string | undefined): Record<string, ControlPanelPreset> {
   if (!isRecord(value)) {
     return {};
   }

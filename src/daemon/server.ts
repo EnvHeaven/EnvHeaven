@@ -1085,7 +1085,7 @@ export async function startDaemon(
         const group = createActionGroup({
           artifactId: typeof payload.artifactId === "string" ? payload.artifactId : undefined,
           repoRoot: repoRoot || prepared[0]?.repoRoot,
-          label: typeof payload.label === "string" ? payload.label : "Dynamic View run",
+          label: typeof payload.label === "string" ? payload.label : "Action Board run",
         });
         const runs: TerminalSessionSummary[] = [];
         const slotRunMap: Record<string, string> = {};
@@ -1182,11 +1182,9 @@ export async function startDaemon(
           return;
         }
         const payload = await readJsonBody(request);
-        const repoRoot = typeof payload.repoRoot === "string" ? path.resolve(payload.repoRoot) : "";
-        if (!repoRoot) {
-          sendJson(response, 400, { error: "repoRoot is required." });
-          return;
-        }
+        const repoRoot = typeof payload.repoRoot === "string" && payload.repoRoot.trim()
+          ? path.resolve(payload.repoRoot)
+          : undefined;
         const preset = normalizeControlPanelPresetPayload(payload, undefined);
         if (!preset) {
           sendJson(response, 400, { error: "Invalid control panel preset payload." });
@@ -1210,11 +1208,9 @@ export async function startDaemon(
           return;
         }
         const payload = await readJsonBody(request);
-        const repoRoot = typeof payload.repoRoot === "string" ? path.resolve(payload.repoRoot) : "";
-        if (!repoRoot) {
-          sendJson(response, 400, { error: "repoRoot is required." });
-          return;
-        }
+        const repoRoot = typeof payload.repoRoot === "string" && payload.repoRoot.trim()
+          ? path.resolve(payload.repoRoot)
+          : undefined;
         const preset = normalizeControlPanelPresetPayload(payload, presetId);
         if (!preset) {
           sendJson(response, 400, { error: "Invalid control panel preset payload." });
@@ -1238,11 +1234,7 @@ export async function startDaemon(
           return;
         }
         const repoRootRaw = url.searchParams.get("repoRoot") ?? "";
-        if (!repoRootRaw) {
-          sendJson(response, 400, { error: "repoRoot query parameter is required." });
-          return;
-        }
-        const repoRoot = path.resolve(repoRootRaw);
+        const repoRoot = repoRootRaw ? path.resolve(repoRootRaw) : undefined;
         const deleted = await stateStore.deleteControlPanelPreset(repoRoot, presetId);
         if (!deleted) {
           sendJson(response, 404, { error: `Preset "${presetId}" not found.` });

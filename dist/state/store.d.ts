@@ -31,6 +31,7 @@ export interface EnvHeavenStateFile {
     selectedRepoId?: string;
     recentRepoIds: string[];
     repos: Record<string, RepoStateRecord>;
+    globalControlPanelPresets: Record<string, ControlPanelPreset>;
 }
 export interface ResolvedArtifactVersion {
     value: string;
@@ -51,8 +52,8 @@ export declare class EnvHeavenStateStore {
     getSelectedRepo(preferredRepoRoot?: string): Promise<RepoStateRecord | null>;
     invalidateCache(): void;
     listControlPanelPresets(repoRoot?: string, artifactId?: string): Promise<ControlPanelPreset[]>;
-    upsertControlPanelPreset(repoRoot: string, preset: ControlPanelPreset): Promise<ControlPanelPreset>;
-    deleteControlPanelPreset(repoRoot: string, presetId: string): Promise<boolean>;
+    upsertControlPanelPreset(repoRoot: string | undefined, preset: ControlPanelPreset): Promise<ControlPanelPreset>;
+    deleteControlPanelPreset(repoRoot: string | undefined, presetId: string): Promise<boolean>;
     getVersionRecords(repoRoot: string): Promise<ArtifactVersionRecord[]>;
     getVersionRecord(repoRoot: string, artifactName: string, packageName?: string): Promise<ArtifactVersionRecord | null>;
     setArtifactVersion(repoRoot: string, artifactName: string, packageName: string | undefined, updates: Partial<Pick<ArtifactVersionRecord, "lastVersion" | "nextVersion">>): Promise<ArtifactVersionRecord>;

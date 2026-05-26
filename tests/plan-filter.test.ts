@@ -7,10 +7,11 @@ function makeExec(args: string[]): ExecutionSpec {
   return { command: "pnpm", args, env: {}, cwd: "/repo" };
 }
 
-function makeArtifact(artifactName: string, packageName?: string): ArtifactExecutionPlan {
+function makeArtifact(artifactName: string, packageName?: string, repoCloneFolderPath?: string): ArtifactExecutionPlan {
   return {
     artifactName,
     packageName,
+    repoCloneFolderPath,
     runnerName: `${artifactName}-runner`,
     status: "runnable",
     diagnostics: [],
@@ -54,7 +55,7 @@ test("applyPnpmRecursiveFilter: replaces -r with --filter when one artifact sele
   const exec = makeExec(["-r", "--if-present", "run", "build"]);
   const artifacts = [makeArtifact("envheaven-package-01", "envheaven")];
   const result = applyPnpmRecursiveFilter(exec, artifacts, ["envheaven"]);
-  assert.deepEqual(result?.args, ["--filter", "envheaven", "--if-present", "run", "build"]);
+  assert.deepEqual(result?.args, ["--filter", "envheaven", "--fail-if-no-match", "--if-present", "run", "build"]);
 });
 
 test("applyPnpmRecursiveFilter: injects multiple --filter flags for multiple selected artifacts", () => {
@@ -67,6 +68,24 @@ test("applyPnpmRecursiveFilter: injects multiple --filter flags for multiple sel
   assert.deepEqual(result?.args, [
     "--filter", "envheaven",
     "--filter", "@envheaven/plugins-nodejs-pnpm",
+    "--fail-if-no-match",
+    "--if-present", "run", "build",
+  ]);
+});
+
+test("applyPnpmRecursiveFilter: prefers workspace path filters when available", () => {
+  const exec = makeExec(["-r", "--if-present", "run", "build"]);
+  const artifacts = [
+    makeArtifact(
+      "envheaven-plugin-offiline-web-ui-01",
+      "@envheaven/plugins-offiline-web-ui",
+      "artifacts/envheaven-pkg-plugin-offiline-web-ui-01",
+    ),
+  ];
+  const result = applyPnpmRecursiveFilter(exec, artifacts, ["envheaven-plugin-offiline-web-ui-01"]);
+  assert.deepEqual(result?.args, [
+    "--filter", "./artifacts/envheaven-pkg-plugin-offiline-web-ui-01",
+    "--fail-if-no-match",
     "--if-present", "run", "build",
   ]);
 });
@@ -75,7 +94,7 @@ test("applyPnpmRecursiveFilter: -r at non-zero position is correctly replaced", 
   const exec = makeExec(["--if-present", "-r", "run", "build"]);
   const artifacts = [makeArtifact("envheaven-package-01", "envheaven")];
   const result = applyPnpmRecursiveFilter(exec, artifacts, ["envheaven"]);
-  assert.deepEqual(result?.args, ["--if-present", "--filter", "envheaven", "run", "build"]);
+  assert.deepEqual(result?.args, ["--if-present", "--filter", "envheaven", "--fail-if-no-match", "run", "build"]);
 });
 
 test("applyPnpmRecursiveFilter: preserves all other ExecutionSpec fields unchanged", () => {

@@ -72,3 +72,48 @@ test("control panel presets can be deleted", async () => {
   assert.equal(await store.deleteControlPanelPreset(repoRoot, "preset_01"), false);
   assert.deepEqual(await store.listControlPanelPresets(repoRoot), []);
 });
+
+test("control panel presets can be global", async () => {
+  const store = makeIsolatedStore();
+  const saved = await store.upsertControlPanelPreset(undefined, makePreset({
+    repoRoot: undefined,
+    artifactId: undefined,
+    name: "Global panel",
+  }));
+
+  assert.equal(saved.repoRoot, undefined);
+  assert.equal(saved.artifactId, undefined);
+
+  const presets = await store.listControlPanelPresets();
+  assert.equal(presets.length, 1);
+  assert.equal(presets[0]?.name, "Global panel");
+
+  assert.equal(await store.deleteControlPanelPreset(undefined, "preset_01"), true);
+  assert.deepEqual(await store.listControlPanelPresets(), []);
+});
+
+test("unfiltered control panel preset list returns global and scoped presets", async () => {
+  const store = makeIsolatedStore();
+  await store.upsertControlPanelPreset(undefined, makePreset({
+    id: "global_panel",
+    repoRoot: undefined,
+    name: "Global panel",
+  }));
+  await store.upsertControlPanelPreset("/tmp/repo-one", makePreset({
+    id: "scoped_panel",
+    repoRoot: "/tmp/repo-one",
+    artifactId: "artifact-01",
+    name: "Scoped panel",
+  }));
+
+  assert.deepEqual((await store.listControlPanelPresets()).map((preset) => preset.name), [
+    "Global panel",
+    "Scoped panel",
+  ]);
+  assert.deepEqual((await store.listControlPanelPresets(undefined, "artifact-01")).map((preset) => preset.name), [
+    "Scoped panel",
+  ]);
+  assert.deepEqual((await store.listControlPanelPresets("/tmp/repo-one")).map((preset) => preset.name), [
+    "Scoped panel",
+  ]);
+});
