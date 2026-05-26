@@ -53,9 +53,11 @@ class EnvHeavenStateStore {
             repoId,
             repoRoot,
             artifacts: {},
+            controlPanelPresets: {},
             updatedAt: new Date().toISOString(),
         };
         repoRecord.repoRoot = repoRoot;
+        repoRecord.controlPanelPresets ??= {};
         repoRecord.updatedAt = new Date().toISOString();
         state.repos[repoId] = repoRecord;
         state.recentRepoIds = [repoId, ...state.recentRepoIds.filter((entry) => entry !== repoId)].slice(0, 25);
@@ -79,6 +81,45 @@ class EnvHeavenStateStore {
     }
     invalidateCache() {
         this.cache = null;
+    }
+    async listControlPanelPresets(repoRoot, artifactId) {
+        const state = await this.loadState(true);
+        const repos = repoRoot
+            ? [state.repos[buildRepoId(repoRoot)]].filter((repo) => Boolean(repo))
+            : Object.values(state.repos);
+        return repos
+            .flatMap((repo) => Object.values(repo.controlPanelPresets ?? {}))
+            .filter((preset) => !artifactId || preset.artifactId === artifactId)
+            .sort((left, right) => left.name.localeCompare(right.name));
+    }
+    async upsertControlPanelPreset(repoRoot, preset) {
+        await this.rememberRepo(repoRoot);
+        const state = await this.loadState(true);
+        const repoRecord = state.repos[buildRepoId(repoRoot)];
+        const now = Date.now();
+        const existing = repoRecord.controlPanelPresets[preset.id];
+        const nextPreset = {
+            ...preset,
+            repoRoot,
+            createdAt: existing?.createdAt ?? preset.createdAt ?? now,
+            updatedAt: now,
+        };
+        repoRecord.controlPanelPresets[preset.id] = nextPreset;
+        repoRecord.updatedAt = new Date(now).toISOString();
+        await this.saveState(state);
+        return nextPreset;
+    }
+    async deleteControlPanelPreset(repoRoot, presetId) {
+        await this.rememberRepo(repoRoot);
+        const state = await this.loadState(true);
+        const repoRecord = state.repos[buildRepoId(repoRoot)];
+        const existed = presetId in repoRecord.controlPanelPresets;
+        if (existed) {
+            delete repoRecord.controlPanelPresets[presetId];
+            repoRecord.updatedAt = new Date().toISOString();
+            await this.saveState(state);
+        }
+        return existed;
     }
     async getVersionRecords(repoRoot) {
         const repoRecord = await this.ensureRepo(repoRoot);
@@ -423,6 +464,7 @@ function normalizeStateFile(input) {
             repoId,
             repoRoot: repoValue.repoRoot,
             artifacts: normalizedArtifacts,
+            controlPanelPresets: normalizeControlPanelPresets(repoValue.controlPanelPresets, repoValue.repoRoot),
             updatedAt: typeof repoValue.updatedAt === "string" ? repoValue.updatedAt : new Date(0).toISOString(),
         };
     }
@@ -435,6 +477,98 @@ function normalizeStateFile(input) {
         recentRepoIds: recentRepoIds.filter((repoId) => repoId in normalizedRepos),
         repos: normalizedRepos,
     };
+}
+function normalizeControlPanelPresets(value, repoRoot) {
+    if (!isRecord(value)) {
+        return {};
+    }
+    const presets = {};
+    for (const [presetId, rawPreset] of Object.entries(value)) {
+        if (!isRecord(rawPreset)) {
+            continue;
+        }
+        const id = typeof rawPreset.id === "string" ? rawPreset.id : presetId;
+        const name = typeof rawPreset.name === "string" ? rawPreset.name.trim() : "";
+        if (!isValidControlPanelId(id) || !name) {
+            continue;
+        }
+        const layout = normalizeControlLayout(rawPreset.layout);
+        const blocks = Array.isArray(rawPreset.blocks)
+            ? rawPreset.blocks.flatMap((block) => {
+                const normalized = normalizeControlBlock(block);
+                return normalized ? [normalized] : [];
+            })
+            : [];
+        if (!layout) {
+            continue;
+        }
+        presets[id] = {
+            id,
+            artifactId: typeof rawPreset.artifactId === "string" ? rawPreset.artifactId : undefined,
+            repoRoot: typeof rawPreset.repoRoot === "string" ? rawPreset.repoRoot : repoRoot,
+            name,
+            layout,
+            blocks,
+            createdAt: typeof rawPreset.createdAt === "number" ? rawPreset.createdAt : Date.now(),
+            updatedAt: typeof rawPreset.updatedAt === "number" ? rawPreset.updatedAt : Date.now(),
+        };
+    }
+    return presets;
+}
+function normalizeControlLayout(value) {
+    if (!isRecord(value) || typeof value.type !== "string") {
+        return null;
+    }
+    if (value.type === "block" && typeof value.blockId === "string" && isValidControlPanelId(value.blockId)) {
+        return { type: "block", blockId: value.blockId };
+    }
+    if (value.type === "stack" && Array.isArray(value.blockIds)) {
+        return {
+            type: "stack",
+            activeBlockId: typeof value.activeBlockId === "string" ? value.activeBlockId : undefined,
+            blockIds: value.blockIds.filter((blockId) => typeof blockId === "string" && isValidControlPanelId(blockId)),
+        };
+    }
+    if (value.type === "split" &&
+        (value.direction === "horizontal" || value.direction === "vertical") &&
+        Array.isArray(value.children)) {
+        const children = value.children.flatMap((child) => {
+            const normalized = normalizeControlLayout(child);
+            return normalized ? [normalized] : [];
+        });
+        if (children.length === 0) {
+            return null;
+        }
+        return {
+            type: "split",
+            direction: value.direction,
+            sizes: Array.isArray(value.sizes) ? value.sizes.filter((size) => typeof size === "number") : undefined,
+            children,
+        };
+    }
+    return null;
+}
+function normalizeControlBlock(value) {
+    if (!isRecord(value) || typeof value.id !== "string" || !isValidControlPanelId(value.id)) {
+        return null;
+    }
+    const kind = typeof value.kind === "string" && value.kind.trim() ? value.kind.trim() : "placeholder";
+    return {
+        id: value.id,
+        kind,
+        title: typeof value.title === "string" && value.title.trim() ? value.title.trim() : value.id,
+        terminal: isRecord(value.terminal) ? value.terminal : undefined,
+        status: isRecord(value.status) ? value.status : undefined,
+        externalLinks: Array.isArray(value.externalLinks)
+            ? value.externalLinks.filter((link) => isRecord(link) &&
+                typeof link.id === "string" &&
+                typeof link.label === "string" &&
+                typeof link.url === "string")
+            : undefined,
+    };
+}
+function isValidControlPanelId(value) {
+    return /^[a-zA-Z0-9_-]{1,96}$/.test(value);
 }
 function normalizeTrackStates(value) {
     const tracksValue = isRecord(value.tracks) ? value.tracks : {};

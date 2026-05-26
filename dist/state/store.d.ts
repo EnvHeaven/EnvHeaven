@@ -1,3 +1,4 @@
+import type { ControlPanelPreset } from "../control-panel/types";
 export interface EnvHeavenPaths {
     cacheDirectory: string;
     configDirectory: string;
@@ -22,6 +23,7 @@ export interface RepoStateRecord {
     repoId: string;
     repoRoot: string;
     artifacts: Record<string, ArtifactVersionRecord>;
+    controlPanelPresets: Record<string, ControlPanelPreset>;
     updatedAt: string;
 }
 export interface EnvHeavenStateFile {
@@ -48,6 +50,9 @@ export declare class EnvHeavenStateStore {
     setSelectedRepo(repoRoot: string): Promise<RepoStateRecord>;
     getSelectedRepo(preferredRepoRoot?: string): Promise<RepoStateRecord | null>;
     invalidateCache(): void;
+    listControlPanelPresets(repoRoot?: string, artifactId?: string): Promise<ControlPanelPreset[]>;
+    upsertControlPanelPreset(repoRoot: string, preset: ControlPanelPreset): Promise<ControlPanelPreset>;
+    deleteControlPanelPreset(repoRoot: string, presetId: string): Promise<boolean>;
     getVersionRecords(repoRoot: string): Promise<ArtifactVersionRecord[]>;
     getVersionRecord(repoRoot: string, artifactName: string, packageName?: string): Promise<ArtifactVersionRecord | null>;
     setArtifactVersion(repoRoot: string, artifactName: string, packageName: string | undefined, updates: Partial<Pick<ArtifactVersionRecord, "lastVersion" | "nextVersion">>): Promise<ArtifactVersionRecord>;

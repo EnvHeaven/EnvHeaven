@@ -94,6 +94,7 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
     const repoModelCache = new Map();
     // In-memory action runs registry
     const actionRuns = new Map();
+    const actionGroups = new Map();
     function pruneCompletedRuns() {
         const completedPipe = Array.from(actionRuns.values()).filter((r) => r.status !== "running");
         if (completedPipe.length > MAX_COMPLETED_RUNS) {
@@ -115,6 +116,7 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
         }
     }
     function killAllRuns() {
+        const touchedGroups = new Set();
         for (const run of actionRuns.values()) {
             if (run.status === "running" && run.process) {
                 try {
@@ -122,6 +124,8 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
                 }
                 catch { /* ignore */ }
                 run.status = "stopped";
+                run.endedAt = new Date().toISOString();
+                touchedGroups.add(run.actionGroupId);
             }
         }
         for (const run of ptyRuns.values()) {
@@ -131,7 +135,12 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
                 }
                 catch { /* ignore */ }
                 run.status = "stopped";
+                run.endedAt = new Date().toISOString();
+                touchedGroups.add(run.actionGroupId);
             }
+        }
+        for (const groupId of touchedGroups) {
+            updateActionGroupStatus(groupId, true);
         }
     }
     const ensureRepoModel = async (repoRoot = normalizedRootDirectory) => {
@@ -182,10 +191,12 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
         }
         run.sseClients.clear();
     }
-    function dispatchAction(actionId, action, repoRoot) {
+    function dispatchAction(actionId, action, repoRoot, metadata = {}) {
         const runId = (0, node_crypto_1.randomUUID)();
         if (!action.runCommand.trim())
             throw new Error(`Action "${actionId}" has an empty runCommand.`);
+        const actionGroupId = metadata.actionGroupId ?? runId;
+        const rootRunId = metadata.rootRunId ?? runId;
         // Use shell=true so the full runCommand string (including quoted args and shell
         // operators like &&, pipes, etc.) is parsed by the OS shell rather than split naively.
         const child = (0, node_child_process_1.spawn)(action.runCommand, {
@@ -196,7 +207,14 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
         });
         const run = {
             runId,
+            terminalSessionId: runId,
+            actionRunId: runId,
+            actionGroupId,
+            rootRunId,
+            parentRunId: metadata.parentRunId,
             actionId,
+            title: metadata.title || action.label || actionId,
+            command: action.runCommand,
             repoRoot,
             startedAt: new Date().toISOString(),
             status: "running",
@@ -207,6 +225,7 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
             process: child,
         };
         actionRuns.set(runId, run);
+        addRunToActionGroup(run);
         const ts = () => new Date().toISOString();
         child.stdout?.on("data", (chunk) => {
             const text = chunk.toString("utf8");
@@ -224,12 +243,16 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
         });
         child.on("close", (exitCode) => {
             run.exitCode = exitCode ?? -1;
-            run.status = (exitCode ?? -1) === 0 ? "success" : "error";
+            if (run.status !== "stopped") {
+                run.status = (exitCode ?? -1) === 0 ? "success" : "error";
+            }
             run.helpers = run.status === "success" ? action.successHelpers : action.failHelpers;
             run.process = null;
+            run.endedAt = new Date().toISOString();
             sendSseResult(run);
+            updateActionGroupStatus(run.actionGroupId);
             pruneCompletedRuns();
-            broadcastEvent({ type: "action:complete", payload: { runId, actionId, exitCode: run.exitCode, status: run.status } });
+            broadcastEvent({ type: "action:complete", payload: { runId, actionId, actionGroupId: run.actionGroupId, exitCode: run.exitCode, status: run.status } });
         });
         child.on("error", (err) => {
             sendSseLine(run, { stream: "system", data: `Process error: ${err.message}`, ts: ts() });
@@ -237,16 +260,215 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
             run.status = "error";
             run.helpers = action.failHelpers;
             run.process = null;
+            run.endedAt = new Date().toISOString();
             sendSseResult(run);
+            updateActionGroupStatus(run.actionGroupId);
         });
-        broadcastEvent({ type: "action:started", payload: { runId, actionId } });
+        broadcastEvent({ type: "action:started", payload: { runId, actionId, actionGroupId: run.actionGroupId } });
         return run;
     }
     const ptyRuns = new Map();
-    async function dispatchPtyAction(actionId, action, repoRoot) {
+    function createActionGroup(input) {
+        const now = Date.now();
+        const group = {
+            id: (0, node_crypto_1.randomUUID)(),
+            artifactId: input.artifactId,
+            repoRoot: input.repoRoot ? node_path_1.default.resolve(input.repoRoot) : undefined,
+            label: input.label,
+            status: "pending",
+            runIds: [],
+            createdAt: now,
+            updatedAt: now,
+        };
+        actionGroups.set(group.id, group);
+        broadcastEvent({ type: "action-group:created", payload: group });
+        return group;
+    }
+    function ensureActionGroupForRun(run) {
+        const existing = actionGroups.get(run.actionGroupId);
+        if (existing) {
+            if (!existing.runIds.includes(run.runId)) {
+                existing.runIds.push(run.runId);
+            }
+            existing.rootRunId ??= run.rootRunId;
+            existing.repoRoot ??= run.repoRoot;
+            existing.label ??= run.title;
+            existing.updatedAt = Date.now();
+            return existing;
+        }
+        const startedAt = toMillis(run.startedAt) ?? Date.now();
+        const group = {
+            id: run.actionGroupId,
+            rootRunId: run.rootRunId,
+            repoRoot: run.repoRoot,
+            label: run.title,
+            status: run.status === "running" ? "running" : mapActionGroupStatus([run.status]),
+            runIds: [run.runId],
+            createdAt: startedAt,
+            updatedAt: Date.now(),
+            endedAt: toMillis(run.endedAt),
+        };
+        actionGroups.set(group.id, group);
+        return group;
+    }
+    function runStatusForGroup(runId) {
+        return actionRuns.get(runId)?.status ?? ptyRuns.get(runId)?.status ?? null;
+    }
+    function mapActionGroupStatus(statuses) {
+        if (statuses.length === 0)
+            return "pending";
+        if (statuses.some((status) => status === "running"))
+            return "running";
+        if (statuses.every((status) => status === "stopped"))
+            return "terminated";
+        if (statuses.some((status) => status === "error"))
+            return "failed";
+        if (statuses.every((status) => status === "success"))
+            return "completed";
+        if (statuses.some((status) => status === "stopped"))
+            return "terminated";
+        return "failed";
+    }
+    function updateActionGroupStatus(groupId, forceTerminated = false) {
+        const group = actionGroups.get(groupId);
+        if (!group)
+            return null;
+        const statuses = group.runIds
+            .map((runId) => runStatusForGroup(runId))
+            .filter((status) => Boolean(status));
+        const nextStatus = forceTerminated ? "terminated" : mapActionGroupStatus(statuses);
+        group.status = nextStatus;
+        group.updatedAt = Date.now();
+        if (nextStatus !== "pending" && nextStatus !== "running") {
+            group.endedAt ??= group.updatedAt;
+        }
+        else {
+            delete group.endedAt;
+        }
+        broadcastEvent({ type: "action-group:updated", payload: group });
+        return group;
+    }
+    function addRunToActionGroup(run) {
+        const group = ensureActionGroupForRun(run);
+        if (!group.runIds.includes(run.runId)) {
+            group.runIds.push(run.runId);
+        }
+        group.rootRunId ??= run.rootRunId;
+        group.repoRoot ??= run.repoRoot;
+        group.updatedAt = Date.now();
+        updateActionGroupStatus(group.id);
+    }
+    function listActionGroups(filters) {
+        return Array.from(actionGroups.values())
+            .filter((group) => !filters.artifactId || group.artifactId === filters.artifactId)
+            .filter((group) => !filters.repoRoot || group.repoRoot === node_path_1.default.resolve(filters.repoRoot))
+            .filter((group) => !filters.status || group.status === filters.status)
+            .sort((left, right) => right.updatedAt - left.updatedAt);
+    }
+    function mapTerminalStatus(status) {
+        if (status === "running")
+            return "running";
+        if (status === "success")
+            return "completed";
+        if (status === "error")
+            return "failed";
+        if (status === "stopped")
+            return "terminated";
+        return "unknown";
+    }
+    function toMillis(value) {
+        if (!value)
+            return undefined;
+        const time = new Date(value).getTime();
+        return Number.isFinite(time) ? time : undefined;
+    }
+    function pipeRunToTerminalSession(run) {
+        const status = mapTerminalStatus(run.status);
+        return {
+            id: run.terminalSessionId,
+            runId: run.runId,
+            actionId: run.actionId,
+            actionLabel: run.title,
+            actionRunId: run.actionRunId,
+            actionGroupId: run.actionGroupId,
+            repoRoot: run.repoRoot,
+            command: run.command,
+            kind: "pipe",
+            status,
+            startedAt: toMillis(run.startedAt),
+            endedAt: toMillis(run.endedAt),
+            exitCode: run.exitCode,
+            hasReplay: run.lines.length > 0,
+            canAttach: false,
+            canStop: run.status === "running" && Boolean(run.process),
+            title: run.title,
+        };
+    }
+    function ptyRunToTerminalSession(run) {
+        const status = mapTerminalStatus(run.status);
+        return {
+            id: run.terminalSessionId,
+            runId: run.runId,
+            actionId: run.actionId,
+            actionLabel: run.title,
+            actionRunId: run.actionRunId,
+            actionGroupId: run.actionGroupId,
+            repoRoot: run.repoRoot,
+            command: run.command,
+            kind: "pty",
+            status,
+            startedAt: toMillis(run.startedAt),
+            endedAt: toMillis(run.endedAt),
+            exitCode: run.exitCode,
+            hasReplay: run.replayBuffer.length > 0,
+            canAttach: true,
+            canStop: run.status === "running" && Boolean(run.ptyProcess),
+            title: run.title,
+            prelude: run.displayPrelude,
+        };
+    }
+    function listTerminalSessions(filters) {
+        return [
+            ...Array.from(actionRuns.values()).map(pipeRunToTerminalSession),
+            ...Array.from(ptyRuns.values()).map(ptyRunToTerminalSession),
+        ]
+            .filter((session) => !filters.repoRoot || session.repoRoot === node_path_1.default.resolve(filters.repoRoot))
+            .filter((session) => !filters.actionGroupId || session.actionGroupId === filters.actionGroupId)
+            .filter((session) => !filters.status || session.status === filters.status)
+            .filter((session) => !filters.artifactId || session.artifactId === filters.artifactId)
+            .sort((left, right) => (right.startedAt ?? 0) - (left.startedAt ?? 0));
+    }
+    function stopKnownRun(runId) {
+        const run = actionRuns.get(runId);
+        if (run) {
+            if (run.process && run.status === "running") {
+                run.process.kill("SIGTERM");
+                run.status = "stopped";
+                run.endedAt = new Date().toISOString();
+                updateActionGroupStatus(run.actionGroupId);
+                return { found: true, status: run.status, stopped: true };
+            }
+            return { found: true, status: run.status, stopped: false };
+        }
+        const ptyRun = ptyRuns.get(runId);
+        if (ptyRun) {
+            if (ptyRun.ptyProcess && ptyRun.status === "running") {
+                ptyRun.ptyProcess.kill();
+                ptyRun.status = "stopped";
+                ptyRun.endedAt = new Date().toISOString();
+                updateActionGroupStatus(ptyRun.actionGroupId);
+                return { found: true, status: ptyRun.status, stopped: true };
+            }
+            return { found: true, status: ptyRun.status, stopped: false };
+        }
+        return { found: false, stopped: false };
+    }
+    async function dispatchPtyAction(actionId, action, repoRoot, metadata = {}) {
         const runId = (0, node_crypto_1.randomUUID)();
         if (!action.runCommand.trim())
             throw new Error(`Action "${actionId}" has an empty runCommand.`);
+        const actionGroupId = metadata.actionGroupId ?? runId;
+        const rootRunId = metadata.rootRunId ?? runId;
         const ptyMod = await loadPty();
         const shell = process.env.SHELL ?? "sh";
         const ptyProcess = ptyMod.spawn(shell, ["-lc", action.runCommand], {
@@ -259,7 +481,14 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
         });
         const run = {
             runId,
+            terminalSessionId: runId,
+            actionRunId: runId,
+            actionGroupId,
+            rootRunId,
+            parentRunId: metadata.parentRunId,
             actionId,
+            title: metadata.title || action.label || actionId,
+            command: action.runCommand,
             repoRoot,
             startedAt: new Date().toISOString(),
             status: "running",
@@ -272,6 +501,7 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
             replayBytes: 0,
         };
         ptyRuns.set(runId, run);
+        addRunToActionGroup(run);
         ptyProcess.onData((data) => {
             run.replayBuffer.push(data);
             run.replayBytes += Buffer.byteLength(data, "utf8");
@@ -297,9 +527,12 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
         });
         ptyProcess.onExit(({ exitCode }) => {
             run.exitCode = exitCode;
-            run.status = exitCode === 0 ? "success" : "error";
+            if (run.status !== "stopped") {
+                run.status = exitCode === 0 ? "success" : "error";
+            }
             run.helpers = run.status === "success" ? action.successHelpers : action.failHelpers;
             run.ptyProcess = null;
+            run.endedAt = new Date().toISOString();
             const msg = JSON.stringify({ type: "exit", exitCode, status: run.status, helpers: run.helpers });
             for (const ws of run.wsClients) {
                 if (ws.readyState === ws_1.WebSocket.OPEN) {
@@ -311,10 +544,11 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
                 }
             }
             run.wsClients.clear();
+            updateActionGroupStatus(run.actionGroupId);
             pruneCompletedRuns();
-            broadcastEvent({ type: "action:complete", payload: { runId, actionId, exitCode, status: run.status } });
+            broadcastEvent({ type: "action:complete", payload: { runId, actionId, actionGroupId: run.actionGroupId, exitCode, status: run.status } });
         });
-        broadcastEvent({ type: "action:started", payload: { runId, actionId, terminalMode: "pty" } });
+        broadcastEvent({ type: "action:started", payload: { runId, actionId, actionGroupId: run.actionGroupId, terminalMode: "pty" } });
         return run;
     }
     const server = node_http_1.default.createServer(async (request, response) => {
@@ -671,6 +905,232 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
                 }
                 return;
             }
+            // ─── GET /api/terminal-sessions ─────────────────────────────────────
+            if (url.pathname === "/api/terminal-sessions" && request.method === "GET") {
+                const status = normalizeTerminalSessionStatus(url.searchParams.get("status"));
+                const sessions = listTerminalSessions({
+                    artifactId: url.searchParams.get("artifactId") ?? undefined,
+                    repoRoot: url.searchParams.get("repoRoot") ?? undefined,
+                    actionGroupId: url.searchParams.get("actionGroupId") ?? undefined,
+                    status: status ?? undefined,
+                });
+                sendJson(response, 200, { sessions }, true);
+                return;
+            }
+            // ─── GET /api/action-groups ────────────────────────────────────────
+            if (url.pathname === "/api/action-groups" && request.method === "GET") {
+                const status = normalizeActionGroupStatus(url.searchParams.get("status"));
+                const groups = listActionGroups({
+                    artifactId: url.searchParams.get("artifactId") ?? undefined,
+                    repoRoot: url.searchParams.get("repoRoot") ?? undefined,
+                    status: status ?? undefined,
+                });
+                sendJson(response, 200, { groups }, true);
+                return;
+            }
+            // ─── POST /api/action-groups/dispatch ──────────────────────────────
+            if (url.pathname === "/api/action-groups/dispatch" && request.method === "POST") {
+                if (!isTrustedOrigin(request)) {
+                    sendJson(response, 403, { error: "Cross-origin mutation requests are not allowed." });
+                    return;
+                }
+                const payload = await readJsonBody(request);
+                const repoRoot = typeof payload.repoRoot === "string" ? node_path_1.default.resolve(payload.repoRoot) : "";
+                const terminals = Array.isArray(payload.terminals) ? payload.terminals : [];
+                if (terminals.length === 0) {
+                    sendJson(response, 400, { error: "terminals must contain at least one terminal request." });
+                    return;
+                }
+                const prepared = [];
+                for (const terminal of terminals) {
+                    if (typeof terminal.runCommand === "string" && terminal.runCommand.trim()) {
+                        sendJson(response, 400, { error: "raw runCommand dispatch is not supported here; configure an actionId and repoRoot." });
+                        return;
+                    }
+                    const terminalRepoRoot = typeof terminal.repoRoot === "string" ? node_path_1.default.resolve(terminal.repoRoot) : repoRoot;
+                    const actionId = typeof terminal.actionId === "string" ? terminal.actionId.trim() : "";
+                    if (!terminalRepoRoot || !actionId) {
+                        sendJson(response, 400, { error: "Each terminal requires actionId and repoRoot." });
+                        return;
+                    }
+                    const actions = await (0, loader_2.loadActions)(terminalRepoRoot);
+                    const action = actions.find((entry) => entry.id === actionId);
+                    if (!action) {
+                        sendJson(response, 404, { error: `Action "${actionId}" not found for "${terminalRepoRoot}".` });
+                        return;
+                    }
+                    prepared.push({
+                        slotId: typeof terminal.slotId === "string" ? terminal.slotId : undefined,
+                        actionId,
+                        repoRoot: terminalRepoRoot,
+                        title: typeof terminal.title === "string" ? terminal.title : undefined,
+                        action: { ...action, terminalMode: "pty" },
+                    });
+                }
+                const group = createActionGroup({
+                    artifactId: typeof payload.artifactId === "string" ? payload.artifactId : undefined,
+                    repoRoot: repoRoot || prepared[0]?.repoRoot,
+                    label: typeof payload.label === "string" ? payload.label : "Dynamic View run",
+                });
+                const runs = [];
+                const slotRunMap = {};
+                try {
+                    for (const terminal of prepared) {
+                        const run = await dispatchPtyAction(terminal.actionId, terminal.action, terminal.repoRoot, {
+                            actionGroupId: group.id,
+                            rootRunId: group.rootRunId,
+                            title: terminal.title,
+                            artifactId: group.artifactId,
+                        });
+                        if (!group.rootRunId) {
+                            group.rootRunId = run.runId;
+                        }
+                        if (terminal.slotId) {
+                            slotRunMap[terminal.slotId] = run.runId;
+                        }
+                        runs.push(ptyRunToTerminalSession(run));
+                    }
+                    updateActionGroupStatus(group.id);
+                    const result = {
+                        ok: true,
+                        group,
+                        runs,
+                        slotRunMap,
+                    };
+                    sendJson(response, 200, result);
+                }
+                catch (err) {
+                    for (const run of runs) {
+                        stopKnownRun(run.runId);
+                    }
+                    updateActionGroupStatus(group.id, true);
+                    sendJson(response, 500, { error: err instanceof Error ? err.message : "Failed to dispatch action group." });
+                }
+                return;
+            }
+            // ─── POST /api/action-groups/:groupId/stop ──────────────────────────
+            if (request.method === "POST" && url.pathname.startsWith("/api/action-groups/") && url.pathname.endsWith("/stop")) {
+                if (!isTrustedOrigin(request)) {
+                    sendJson(response, 403, { error: "Cross-origin mutation requests are not allowed." });
+                    return;
+                }
+                const groupId = url.pathname.replace("/api/action-groups/", "").replace(/\/stop$/, "").replace(/^\/+|\/+$/g, "");
+                if (!groupId) {
+                    sendJson(response, 400, { error: "action group id is required." });
+                    return;
+                }
+                const group = actionGroups.get(groupId);
+                const sessions = group
+                    ? group.runIds
+                        .map((runId) => actionRuns.get(runId) ? pipeRunToTerminalSession(actionRuns.get(runId)) : ptyRuns.get(runId) ? ptyRunToTerminalSession(ptyRuns.get(runId)) : null)
+                        .filter((session) => Boolean(session))
+                    : listTerminalSessions({ actionGroupId: groupId });
+                if (!group && sessions.length === 0) {
+                    sendJson(response, 404, { error: `Action group "${groupId}" not found.` });
+                    return;
+                }
+                const stoppedSessionIds = [];
+                const alreadyCompletedSessionIds = [];
+                for (const session of sessions) {
+                    const result = stopKnownRun(session.runId);
+                    if (result.stopped) {
+                        stoppedSessionIds.push(session.id);
+                    }
+                    else {
+                        alreadyCompletedSessionIds.push(session.id);
+                    }
+                }
+                const nextGroup = updateActionGroupStatus(groupId, stoppedSessionIds.length > 0) ?? group ?? null;
+                sendJson(response, 200, {
+                    ok: true,
+                    actionGroupId: groupId,
+                    group: nextGroup,
+                    stoppedSessionIds,
+                    alreadyCompletedSessionIds,
+                });
+                return;
+            }
+            // ─── GET /api/control-panel/presets ─────────────────────────────────
+            if (url.pathname === "/api/control-panel/presets" && request.method === "GET") {
+                const presets = await stateStore.listControlPanelPresets(url.searchParams.get("repoRoot") ?? undefined, url.searchParams.get("artifactId") ?? undefined);
+                sendJson(response, 200, { presets }, true);
+                return;
+            }
+            // ─── POST /api/control-panel/presets ────────────────────────────────
+            if (url.pathname === "/api/control-panel/presets" && request.method === "POST") {
+                if (!isTrustedOrigin(request)) {
+                    sendJson(response, 403, { error: "Cross-origin mutation requests are not allowed." });
+                    return;
+                }
+                const payload = await readJsonBody(request);
+                const repoRoot = typeof payload.repoRoot === "string" ? node_path_1.default.resolve(payload.repoRoot) : "";
+                if (!repoRoot) {
+                    sendJson(response, 400, { error: "repoRoot is required." });
+                    return;
+                }
+                const preset = normalizeControlPanelPresetPayload(payload, undefined);
+                if (!preset) {
+                    sendJson(response, 400, { error: "Invalid control panel preset payload." });
+                    return;
+                }
+                const saved = await stateStore.upsertControlPanelPreset(repoRoot, preset);
+                sendJson(response, 200, { ok: true, preset: saved });
+                broadcastEvent({ type: "control-panel:presets-updated", payload: { repoRoot } });
+                return;
+            }
+            // ─── PUT /api/control-panel/presets/:presetId ───────────────────────
+            if (request.method === "PUT" && url.pathname.startsWith("/api/control-panel/presets/")) {
+                if (!isTrustedOrigin(request)) {
+                    sendJson(response, 403, { error: "Cross-origin mutation requests are not allowed." });
+                    return;
+                }
+                const presetId = url.pathname.replace("/api/control-panel/presets/", "").replace(/^\/+|\/+$/g, "");
+                if (!isValidControlPanelId(presetId)) {
+                    sendJson(response, 400, { error: "preset id is invalid." });
+                    return;
+                }
+                const payload = await readJsonBody(request);
+                const repoRoot = typeof payload.repoRoot === "string" ? node_path_1.default.resolve(payload.repoRoot) : "";
+                if (!repoRoot) {
+                    sendJson(response, 400, { error: "repoRoot is required." });
+                    return;
+                }
+                const preset = normalizeControlPanelPresetPayload(payload, presetId);
+                if (!preset) {
+                    sendJson(response, 400, { error: "Invalid control panel preset payload." });
+                    return;
+                }
+                const saved = await stateStore.upsertControlPanelPreset(repoRoot, preset);
+                sendJson(response, 200, { ok: true, preset: saved });
+                broadcastEvent({ type: "control-panel:presets-updated", payload: { repoRoot } });
+                return;
+            }
+            // ─── DELETE /api/control-panel/presets/:presetId ────────────────────
+            if (request.method === "DELETE" && url.pathname.startsWith("/api/control-panel/presets/")) {
+                if (!isTrustedOrigin(request)) {
+                    sendJson(response, 403, { error: "Cross-origin mutation requests are not allowed." });
+                    return;
+                }
+                const presetId = url.pathname.replace("/api/control-panel/presets/", "").replace(/^\/+|\/+$/g, "");
+                if (!isValidControlPanelId(presetId)) {
+                    sendJson(response, 400, { error: "preset id is invalid." });
+                    return;
+                }
+                const repoRootRaw = url.searchParams.get("repoRoot") ?? "";
+                if (!repoRootRaw) {
+                    sendJson(response, 400, { error: "repoRoot query parameter is required." });
+                    return;
+                }
+                const repoRoot = node_path_1.default.resolve(repoRootRaw);
+                const deleted = await stateStore.deleteControlPanelPreset(repoRoot, presetId);
+                if (!deleted) {
+                    sendJson(response, 404, { error: `Preset "${presetId}" not found.` });
+                    return;
+                }
+                sendJson(response, 200, { ok: true, presetId });
+                broadcastEvent({ type: "control-panel:presets-updated", payload: { repoRoot } });
+                return;
+            }
             // ─── GET /api/actions/stream/:runId ─────────────────────────────────
             if (request.method === "GET" && url.pathname.startsWith("/api/actions/stream/")) {
                 const runId = url.pathname.replace("/api/actions/stream/", "").replace(/^\/+|\/+$/g, "");
@@ -754,18 +1214,28 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
                 const pipeRuns = Array.from(actionRuns.values()).map((run) => ({
                     runId: run.runId,
                     actionId: run.actionId,
+                    actionGroupId: run.actionGroupId,
+                    title: run.title,
+                    command: run.command,
+                    repoRoot: run.repoRoot,
                     status: run.status,
                     exitCode: run.exitCode,
                     startedAt: run.startedAt,
+                    endedAt: run.endedAt,
                     lineCount: run.lines.length,
                     terminalMode: "pipe",
                 }));
                 const termRuns = Array.from(ptyRuns.values()).map((run) => ({
                     runId: run.runId,
                     actionId: run.actionId,
+                    actionGroupId: run.actionGroupId,
+                    title: run.title,
+                    command: run.command,
+                    repoRoot: run.repoRoot,
                     status: run.status,
                     exitCode: run.exitCode,
                     startedAt: run.startedAt,
+                    endedAt: run.endedAt,
                     lineCount: run.replayBuffer.length,
                     terminalMode: "pty",
                 }));
@@ -779,26 +1249,12 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
                     return;
                 }
                 const runId = url.pathname.replace("/api/actions/stop/", "").replace(/^\/+|\/+$/g, "");
-                const run = actionRuns.get(runId);
-                const ptyRun = ptyRuns.get(runId);
-                if (!run && !ptyRun) {
+                const result = stopKnownRun(runId);
+                if (!result.found) {
                     sendJson(response, 404, { error: `Run "${runId}" not found.` });
                     return;
                 }
-                if (run) {
-                    if (run.process && run.status === "running") {
-                        run.process.kill("SIGTERM");
-                        run.status = "stopped";
-                    }
-                    sendJson(response, 200, { ok: true, runId, status: run.status });
-                }
-                else if (ptyRun) {
-                    if (ptyRun.ptyProcess && ptyRun.status === "running") {
-                        ptyRun.ptyProcess.kill();
-                        ptyRun.status = "stopped";
-                    }
-                    sendJson(response, 200, { ok: true, runId, status: ptyRun.status });
-                }
+                sendJson(response, 200, { ok: true, runId, status: result.status });
                 return;
             }
             // ─── DELETE /api/actions/config/:id ─────────────────────────────────
@@ -869,9 +1325,14 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
                 const pipeRunsWithLogs = Array.from(actionRuns.values()).map((run) => ({
                     runId: run.runId,
                     actionId: run.actionId,
+                    actionGroupId: run.actionGroupId,
+                    title: run.title,
+                    command: run.command,
+                    repoRoot: run.repoRoot,
                     status: run.status,
                     exitCode: run.exitCode,
                     startedAt: run.startedAt,
+                    endedAt: run.endedAt,
                     helpers: run.helpers,
                     lines: run.lines.map((l) => ({ stream: l.stream, data: l.data, ts: l.ts })),
                     terminalMode: "pipe",
@@ -879,9 +1340,14 @@ async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.Env
                 const ptyRunsWithLogs = Array.from(ptyRuns.values()).map((run) => ({
                     runId: run.runId,
                     actionId: run.actionId,
+                    actionGroupId: run.actionGroupId,
+                    title: run.title,
+                    command: run.command,
+                    repoRoot: run.repoRoot,
                     status: run.status,
                     exitCode: run.exitCode,
                     startedAt: run.startedAt,
+                    endedAt: run.endedAt,
                     helpers: run.helpers,
                     lines: [],
                     terminalMode: "pty",
@@ -1038,6 +1504,112 @@ function normalizeVersionPayloadTrack(value) {
     }
     return "release";
 }
+function normalizeTerminalSessionStatus(value) {
+    if (value === "pending" ||
+        value === "running" ||
+        value === "completed" ||
+        value === "failed" ||
+        value === "terminated" ||
+        value === "unknown") {
+        return value;
+    }
+    return null;
+}
+function normalizeActionGroupStatus(value) {
+    if (value === "pending" ||
+        value === "running" ||
+        value === "completed" ||
+        value === "failed" ||
+        value === "terminated") {
+        return value;
+    }
+    return null;
+}
+function normalizeControlPanelPresetPayload(payload, forcedId) {
+    const id = forcedId ?? (typeof payload.id === "string" ? payload.id : (0, node_crypto_1.randomUUID)());
+    if (!isValidControlPanelId(id)) {
+        return null;
+    }
+    const name = typeof payload.name === "string" ? payload.name.trim() : "";
+    if (!name) {
+        return null;
+    }
+    const layout = normalizeControlLayoutPayload(payload.layout);
+    if (!layout) {
+        return null;
+    }
+    const blocks = Array.isArray(payload.blocks)
+        ? payload.blocks.flatMap((block) => {
+            const normalized = normalizeControlBlockPayload(block);
+            return normalized ? [normalized] : [];
+        })
+        : [];
+    const now = Date.now();
+    return {
+        id,
+        artifactId: typeof payload.artifactId === "string" ? payload.artifactId : undefined,
+        repoRoot: typeof payload.repoRoot === "string" ? node_path_1.default.resolve(payload.repoRoot) : undefined,
+        name,
+        layout,
+        blocks,
+        createdAt: typeof payload.createdAt === "number" ? payload.createdAt : now,
+        updatedAt: now,
+    };
+}
+function normalizeControlLayoutPayload(value) {
+    if (!isRecord(value) || typeof value.type !== "string") {
+        return null;
+    }
+    if (value.type === "block" && typeof value.blockId === "string" && isValidControlPanelId(value.blockId)) {
+        return { type: "block", blockId: value.blockId };
+    }
+    if (value.type === "stack" && Array.isArray(value.blockIds)) {
+        return {
+            type: "stack",
+            activeBlockId: typeof value.activeBlockId === "string" ? value.activeBlockId : undefined,
+            blockIds: value.blockIds.filter((blockId) => typeof blockId === "string" && isValidControlPanelId(blockId)),
+        };
+    }
+    if (value.type === "split" &&
+        (value.direction === "horizontal" || value.direction === "vertical") &&
+        Array.isArray(value.children)) {
+        const children = value.children.flatMap((child) => {
+            const normalized = normalizeControlLayoutPayload(child);
+            return normalized ? [normalized] : [];
+        });
+        if (children.length === 0) {
+            return null;
+        }
+        return {
+            type: "split",
+            direction: value.direction,
+            sizes: Array.isArray(value.sizes) ? value.sizes.filter((size) => typeof size === "number") : undefined,
+            children,
+        };
+    }
+    return null;
+}
+function normalizeControlBlockPayload(value) {
+    if (!isRecord(value) || typeof value.id !== "string" || !isValidControlPanelId(value.id)) {
+        return null;
+    }
+    const kind = typeof value.kind === "string" && value.kind.trim() ? value.kind.trim() : "placeholder";
+    return {
+        id: value.id,
+        kind,
+        title: typeof value.title === "string" && value.title.trim() ? value.title.trim() : value.id,
+        terminal: isRecord(value.terminal)
+            ? value.terminal
+            : undefined,
+        status: isRecord(value.status) ? value.status : undefined,
+        externalLinks: Array.isArray(value.externalLinks)
+            ? value.externalLinks.filter((link) => isRecord(link) &&
+                typeof link.id === "string" &&
+                typeof link.label === "string" &&
+                typeof link.url === "string")
+            : undefined,
+    };
+}
 function chooseDisplayedVersionTrack(record) {
     for (const track of store_1.PERSISTED_VERSION_TRACKS) {
         const trackState = (0, store_1.getTrackState)(record, track);
@@ -1095,6 +1667,12 @@ function sanitizeActionId(id) {
     if (!/^[a-zA-Z0-9_-]{1,64}$/.test(id))
         return null;
     return id;
+}
+function isValidControlPanelId(value) {
+    return /^[a-zA-Z0-9_-]{1,96}$/.test(value);
+}
+function isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function sendHtml(response, statusCode, html) {
     response.statusCode = statusCode;
