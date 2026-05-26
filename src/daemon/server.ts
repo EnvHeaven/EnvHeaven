@@ -712,7 +712,7 @@ export async function startDaemon(
           repoDiagnostics: repoModel.diagnostics,
           commands: [
             "envheaven",
-            "envheaven offiline-web-ui",
+            "envheaven offline-web-ui",
             "envheaven deploy local",
             "envheaven deploy development",
             "envheaven deploy beta",
@@ -1884,7 +1884,7 @@ function buildLandingPage(): string {
   <body>
     <h1>EnvHeaven Daemon</h1>
     <p>Daemon status: running.</p>
-    <p>Tip: run <code>envheaven offiline-web-ui</code> to install and launch the offline UI.</p>
+    <p>Tip: run <code>envheaven offline-web-ui</code> to install and launch the offline UI.</p>
     <p>JSON endpoints:</p>
     <ul>
       <li><a href="/api/status">/api/status</a></li>

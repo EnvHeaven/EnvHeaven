@@ -257,7 +257,7 @@ async function main(): Promise<void> {
       process.stdout.write(
         autoStart
           ? "  Saved: the Offline GUI will auto-start with the service.\n"
-          : "  Saved: Offline GUI will not auto-start (run `envheaven offiline-web-ui` anytime).\n",
+          : "  Saved: Offline GUI will not auto-start (run `envheaven offline-web-ui` anytime).\n",
       );
     }
 
@@ -271,7 +271,7 @@ async function main(): Promise<void> {
         // Daemon alive but UI missing — spawn UI-only
         const uiChild = spawn(
           process.execPath,
-          [process.argv[1]!, "offiline-web-ui"],
+          [process.argv[1]!, "offline-web-ui"],
           {
             detached: true,
             stdio: ["ignore", "ignore", "ignore"],
@@ -353,7 +353,7 @@ async function main(): Promise<void> {
           createDiagnostic("info", "daemon-started", `EnvHeaven service started on port ${String(lock.daemonPort)}.`),
           ...(lock.uiPort
             ? [createDiagnostic("info", "offiline-web-ui-started", `EnvHeaven Offline GUI started on port ${String(lock.uiPort)}.`)]
-            : [createDiagnostic("info", "offiline-web-ui-hint", "Tip: run `envheaven offiline-web-ui` to launch the Offline GUI.")]),
+            : [createDiagnostic("info", "offline-web-ui-hint", "Tip: run `envheaven offline-web-ui` to launch the Offline GUI.")]),
         ],
       },
       0,
@@ -557,7 +557,7 @@ async function main(): Promise<void> {
     }
 
     // No subcommand (or restart after stop): start the UI.
-    // This is the same logic as the offiline-web-ui start path.
+    // This is the same logic as the offline-web-ui start path.
     const existingLock2 = await readLockFile(paths);
     const daemonAlive2 = !!(existingLock2 && existingLock2.daemonPort > 0 && (await isPortOpen(existingLock2.daemonPort)));
     const uiAlive2 = !!(daemonAlive2 && existingLock2!.uiPort && existingLock2!.uiPort > 0 && (await isPortOpen(existingLock2!.uiPort)));
@@ -583,7 +583,7 @@ async function main(): Promise<void> {
       spawnEnv2["ENVHEAVEN_UI_ONLY_DAEMON_PORT"] = String(existingLock2!.daemonPort);
     }
 
-    const uiChild = spawn(process.execPath, [process.argv[1], "offiline-web-ui"], {
+    const uiChild = spawn(process.execPath, [process.argv[1], "offline-web-ui"], {
       detached: true,
       stdio: ["ignore", "ignore", "ignore"],
       env: spawnEnv2,
@@ -1053,7 +1053,7 @@ function parseJsonRequestArg(jsonString: string): { intent: CommandIntent | null
   }
 
   const kind = parsed["kind"] as CommandIntent["kind"];
-  const kindAlias: Record<string, string> = { service: "daemon" };
+  const kindAlias: Record<string, string> = { service: "daemon", "offline-web-ui": "offiline-web-ui" };
   const resolvedKind = kindAlias[kind] ?? kind;
   const supportedKinds = new Set(["daemon", "run", "deploy", "offiline-web-ui", "apply"]);
   if (!supportedKinds.has(resolvedKind)) {
@@ -1063,7 +1063,7 @@ function parseJsonRequestArg(jsonString: string): { intent: CommandIntent | null
         createDiagnostic(
           "error",
           "json-request-invalid-kind",
-          `--json-request "kind" must be one of: service, run, deploy, offiline-web-ui. Got: "${kind}".`,
+          `--json-request "kind" must be one of: service, run, deploy, offline-web-ui. Got: "${kind}".`,
         ),
       ],
     };

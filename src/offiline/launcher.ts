@@ -6,7 +6,8 @@ import type http from "node:http";
 import { EnvHeavenStateStore } from "../state/store";
 import { buildWindowsCommandLine } from "../execution/spawn";
 
-const OFFILINE_UI_PACKAGE = "@envheaven/plugins-offiline-web-ui";
+const OFFLINE_UI_PACKAGE = "@envheaven/plugins-offline-web-ui";
+const LEGACY_OFFILINE_UI_PACKAGE = "@envheaven/plugins-offiline-web-ui";
 
 /**
  * Candidate relative paths (from repoRoot) where the offline-web-ui package may live.
@@ -54,7 +55,7 @@ export async function launchOffilineWebUi(
   const api = normalizeApi(loaded);
 
   if (!api?.startOffilineWebUiServer) {
-    throw new Error(`Offiline web UI entry "${resolved.moduleReference}" does not expose startOffilineWebUiServer().`);
+    throw new Error(`Offline Web UI entry "${resolved.moduleReference}" does not expose startOffilineWebUiServer().`);
   }
 
   const started = await api.startOffilineWebUiServer({
@@ -99,8 +100,8 @@ async function resolveOffilineWebUiSource(
     }
   }
 
-  // 2. pnpm global install — populated by "envheaven deploy local"; works from any directory
-  const pnpmGlobalPath = await resolvePnpmGlobalPackage(OFFILINE_UI_PACKAGE);
+  // 2. pnpm global install — populated by "envheaven deploy local"; works from any directory.
+  const pnpmGlobalPath = await resolveFirstPnpmGlobalPackage([OFFLINE_UI_PACKAGE, LEGACY_OFFILINE_UI_PACKAGE]);
   if (pnpmGlobalPath) {
     const globalDistEntry = path.join(pnpmGlobalPath, "dist", "server", "index.js");
     if (await exists(globalDistEntry)) {
@@ -113,13 +114,24 @@ async function resolveOffilineWebUiSource(
   }
 
   // 3. npm cache fallback — downloads from registry
-  const installRoot = path.join(store.getPaths().toolsDirectory, "offiline-web-ui");
-  const requireRoot = await ensureCachedPackage(installRoot, OFFILINE_UI_PACKAGE);
+  const installRoot = path.join(store.getPaths().toolsDirectory, "offline-web-ui");
+  const packageName = await selectInstallablePackage([OFFLINE_UI_PACKAGE, LEGACY_OFFILINE_UI_PACKAGE]);
+  const requireRoot = await ensureCachedPackage(installRoot, packageName);
   return {
     requireRoot,
-    moduleReference: OFFILINE_UI_PACKAGE,
+    moduleReference: packageName,
     source: "user-cache",
   };
+}
+
+async function resolveFirstPnpmGlobalPackage(packageNames: readonly string[]): Promise<string | null> {
+  for (const packageName of packageNames) {
+    const packagePath = await resolvePnpmGlobalPackage(packageName);
+    if (packagePath && await exists(path.join(packagePath, "package.json"))) {
+      return packagePath;
+    }
+  }
+  return null;
 }
 
 async function resolvePnpmGlobalPackage(packageName: string): Promise<string | null> {
@@ -141,6 +153,24 @@ async function resolvePnpmGlobalPackage(packageName: string): Promise<string | n
   });
 }
 
+async function selectInstallablePackage(packageNames: readonly string[]): Promise<string> {
+  for (const packageName of packageNames) {
+    if (await npmPackageExists(packageName)) {
+      return packageName;
+    }
+  }
+  return packageNames[0] ?? OFFLINE_UI_PACKAGE;
+}
+
+async function npmPackageExists(packageName: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
+    execFile(npmCmd, ["view", packageName, "name"], { timeout: 8000 }, (err, stdout) => {
+      resolve(!err && stdout.trim() === packageName);
+    });
+  });
+}
+
 async function ensureCachedPackage(installRoot: string, packageName: string): Promise<string> {
   const packageJsonPath = path.join(installRoot, "package.json");
   const installedPackageJsonPath = path.join(installRoot, "node_modules", ...packageName.split("/"), "package.json");
@@ -149,7 +179,7 @@ async function ensureCachedPackage(installRoot: string, packageName: string): Pr
   if (!await exists(packageJsonPath)) {
     await fs.writeFile(
       packageJsonPath,
-      `${JSON.stringify({ private: true, name: "envheaven-offiline-web-ui-cache" }, null, 2)}\n`,
+      `${JSON.stringify({ private: true, name: "envheaven-offline-web-ui-cache" }, null, 2)}\n`,
       "utf8",
     );
   }

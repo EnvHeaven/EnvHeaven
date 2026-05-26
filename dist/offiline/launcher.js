@@ -9,7 +9,8 @@ const node_module_1 = require("node:module");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const spawn_1 = require("../execution/spawn");
-const OFFILINE_UI_PACKAGE = "@envheaven/plugins-offiline-web-ui";
+const OFFLINE_UI_PACKAGE = "@envheaven/plugins-offline-web-ui";
+const LEGACY_OFFILINE_UI_PACKAGE = "@envheaven/plugins-offiline-web-ui";
 /**
  * Candidate relative paths (from repoRoot) where the offline-web-ui package may live.
  * Order matters — first match with a built dist wins.
@@ -27,7 +28,7 @@ async function launchOffilineWebUi(repoRoot, daemonUrl, store, port) {
     const loaded = localRequire(resolved.moduleReference);
     const api = normalizeApi(loaded);
     if (!api?.startOffilineWebUiServer) {
-        throw new Error(`Offiline web UI entry "${resolved.moduleReference}" does not expose startOffilineWebUiServer().`);
+        throw new Error(`Offline Web UI entry "${resolved.moduleReference}" does not expose startOffilineWebUiServer().`);
     }
     const started = await api.startOffilineWebUiServer({
         daemonUrl,
@@ -59,8 +60,8 @@ async function resolveOffilineWebUiSource(repoRoot, store) {
             }
         }
     }
-    // 2. pnpm global install — populated by "envheaven deploy local"; works from any directory
-    const pnpmGlobalPath = await resolvePnpmGlobalPackage(OFFILINE_UI_PACKAGE);
+    // 2. pnpm global install — populated by "envheaven deploy local"; works from any directory.
+    const pnpmGlobalPath = await resolveFirstPnpmGlobalPackage([OFFLINE_UI_PACKAGE, LEGACY_OFFILINE_UI_PACKAGE]);
     if (pnpmGlobalPath) {
         const globalDistEntry = node_path_1.default.join(pnpmGlobalPath, "dist", "server", "index.js");
         if (await exists(globalDistEntry)) {
@@ -72,13 +73,23 @@ async function resolveOffilineWebUiSource(repoRoot, store) {
         }
     }
     // 3. npm cache fallback — downloads from registry
-    const installRoot = node_path_1.default.join(store.getPaths().toolsDirectory, "offiline-web-ui");
-    const requireRoot = await ensureCachedPackage(installRoot, OFFILINE_UI_PACKAGE);
+    const installRoot = node_path_1.default.join(store.getPaths().toolsDirectory, "offline-web-ui");
+    const packageName = await selectInstallablePackage([OFFLINE_UI_PACKAGE, LEGACY_OFFILINE_UI_PACKAGE]);
+    const requireRoot = await ensureCachedPackage(installRoot, packageName);
     return {
         requireRoot,
-        moduleReference: OFFILINE_UI_PACKAGE,
+        moduleReference: packageName,
         source: "user-cache",
     };
+}
+async function resolveFirstPnpmGlobalPackage(packageNames) {
+    for (const packageName of packageNames) {
+        const packagePath = await resolvePnpmGlobalPackage(packageName);
+        if (packagePath && await exists(node_path_1.default.join(packagePath, "package.json"))) {
+            return packagePath;
+        }
+    }
+    return null;
 }
 async function resolvePnpmGlobalPackage(packageName) {
     return new Promise((resolve) => {
@@ -98,12 +109,28 @@ async function resolvePnpmGlobalPackage(packageName) {
         });
     });
 }
+async function selectInstallablePackage(packageNames) {
+    for (const packageName of packageNames) {
+        if (await npmPackageExists(packageName)) {
+            return packageName;
+        }
+    }
+    return packageNames[0] ?? OFFLINE_UI_PACKAGE;
+}
+async function npmPackageExists(packageName) {
+    return new Promise((resolve) => {
+        const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
+        (0, node_child_process_1.execFile)(npmCmd, ["view", packageName, "name"], { timeout: 8000 }, (err, stdout) => {
+            resolve(!err && stdout.trim() === packageName);
+        });
+    });
+}
 async function ensureCachedPackage(installRoot, packageName) {
     const packageJsonPath = node_path_1.default.join(installRoot, "package.json");
     const installedPackageJsonPath = node_path_1.default.join(installRoot, "node_modules", ...packageName.split("/"), "package.json");
     await node_fs_1.promises.mkdir(installRoot, { recursive: true });
     if (!await exists(packageJsonPath)) {
-        await node_fs_1.promises.writeFile(packageJsonPath, `${JSON.stringify({ private: true, name: "envheaven-offiline-web-ui-cache" }, null, 2)}\n`, "utf8");
+        await node_fs_1.promises.writeFile(packageJsonPath, `${JSON.stringify({ private: true, name: "envheaven-offline-web-ui-cache" }, null, 2)}\n`, "utf8");
     }
     if (!await exists(installedPackageJsonPath)) {
         await runCommand("npm", ["install", "--no-package-lock", "--prefix", installRoot, packageName], installRoot);

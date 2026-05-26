@@ -98,7 +98,7 @@ test("creates a local deploy tag inside an artifact git repo", async () => {
   await runGit(["init", "-b", "main"], artifactDirectory);
   await fs.writeFile(
     path.join(artifactDirectory, "package.json"),
-    `${JSON.stringify({ name: "@envheaven/plugins-offiline-web-ui", version: "0.1.0" }, null, 2)}\n`,
+    `${JSON.stringify({ name: "@envheaven/plugins-offline-web-ui", version: "0.1.0" }, null, 2)}\n`,
     "utf8",
   );
   await runGit(["config", "user.email", "envheaven@example.com"], artifactDirectory);

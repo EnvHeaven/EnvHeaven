@@ -104,7 +104,7 @@ export function inferCommandIntent(args: string[]): {
   if ([runCount > 0, deployCount > 0, offilineCount > 0].filter(Boolean).length > 1) {
     return {
       intent: null,
-      diagnostics: [createDiagnostic("error", "ambiguous-command", "Command cannot mix run, deploy, and offiline-web-ui tags.")],
+      diagnostics: [createDiagnostic("error", "ambiguous-command", "Command cannot mix run, deploy, and offline-web-ui tags.")],
     };
   }
 
@@ -112,7 +112,7 @@ export function inferCommandIntent(args: string[]): {
     if (normalizedTokens.length !== 1) {
       return {
         intent: null,
-        diagnostics: [createDiagnostic("error", "unsupported-command-shape", "offiline-web-ui does not accept extra tokens.")],
+        diagnostics: [createDiagnostic("error", "unsupported-command-shape", "offline-web-ui does not accept extra tokens.")],
       };
     }
 

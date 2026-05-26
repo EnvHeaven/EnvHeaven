@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://envheaven.com">
-    <img src="./docs/readme/logo/envheaven-logo.png" alt="EnvHeaven" width="96" />
+    <img src="./docs/readme/logo/envheaven-logo.svg" alt="EnvHeaven" width="96" />
   </a>
 </p>
 
@@ -26,15 +26,21 @@ It discovers `.envheaven` repositories, resolves environment maps, and lets plug
 - Discovers `.envheaven` metadata from a repository tree.
 - Resolves environment targets such as `local-01`, `development-01`, `beta-01`, and `production-01`.
 - Runs plugin-backed `inspect` and `execute` flows for local and deploy commands.
-- Provides a local daemon API for repos, actions, versions, terminal sessions, and Dynamic View presets.
+- Provides a local daemon API for repos, actions, versions, terminal sessions, and Action Board presets.
 - Tracks local artifact versions and supports dynamic artifact version tokens during publish flows.
 - Supports interactive PTY action terminals through the offline UI.
 
 ## Quick start
 
 ```sh
-# install the CLI
+# release track
+npm install -g envheaven@release
+
+# npm default alias for the release track
 npm install -g envheaven
+
+# experimental track
+npm install -g envheaven@exp
 
 # check the CLI
 envheaven --help
@@ -46,7 +52,7 @@ eh --help
 envheaven
 ```
 
-The Offline Web UI is available through the `@envheaven/plugins-offiline-web-ui` package. The package name currently uses `offiline`; keep that spelling in install commands.
+The Offline Web UI is prepared under the corrected `@envheaven/plugins-offline-web-ui` package name. The legacy typo package `@envheaven/plugins-offiline-web-ui` remains a migration concern only.
 
 ## Minimal `.envheaven` shape
 
@@ -90,8 +96,8 @@ A typical layer can define artifacts and deploy executions:
 | `envheaven` | published | CLI, daemon, plugin host, environment resolution |
 | `@envheaven/plugins-nodejs-pnpm` | published | Run pnpm scripts and pnpm exec specs through EnvHeaven |
 | `@envheaven/plugins-firebase-hosting-deploy` | published | Deploy Firebase Hosting targets through EnvHeaven |
-| `@envheaven/plugins-offiline-web-ui` | published | Local offline UI for daemon, actions, state, versions, and Dynamic View |
-| `@envheaven/plugins-aws-s3-cdn-deploy` | local / NPM not verified | Append-only AWS S3 CDN deploy plugin |
+| `@envheaven/plugins-offline-web-ui` | prepared for publication / NPM not verified | Local offline UI for daemon, actions, state, versions, and Action Board |
+| `@envheaven/plugins-aws-s3-cdn-deploy` | prepared for publication / NPM not verified | Append-only AWS S3 CDN deploy plugin |
 
 ## Plugin contract
 
@@ -106,14 +112,15 @@ The host provides repository context, diagnostics, and a process execution helpe
 
 ## Release channels
 
-Public NPM dist-tags verified for the current package family:
+Planned public package channels:
 
-| Tag | Meaning |
-|---|---|
-| `latest` | current public stable-ish `0.x` channel |
-| `exp` | experimental prerelease channel |
+| Channel | Install | Purpose |
+|---|---|---|
+| `release` | `npm install -g envheaven@release` | intended main `0.x` release track |
+| `latest` | `npm install -g envheaven` | npm default alias for the current release track |
+| `exp` | `npm install -g envheaven@exp` | experimental builds with newer changes |
 
-Local version registry tracks may include `exp`, `canary`, `alpha`, `beta`, `rc`, and `release`, but `canary`, `alpha`, `beta`, and `rc` were not verified as public NPM dist-tags.
+Registry verification currently confirms `latest` and `exp`. The `release` tag is a publish target for the next release flow. Local version registry tracks may include `canary`, `alpha`, `beta`, `rc`, and `release`, but `canary`, `alpha`, `beta`, and `rc` were not verified as public NPM dist-tags.
 
 ## Current status
 

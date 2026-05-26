@@ -90,14 +90,14 @@ function inferCommandIntent(args) {
     if ([runCount > 0, deployCount > 0, offilineCount > 0].filter(Boolean).length > 1) {
         return {
             intent: null,
-            diagnostics: [(0, diagnostics_1.createDiagnostic)("error", "ambiguous-command", "Command cannot mix run, deploy, and offiline-web-ui tags.")],
+            diagnostics: [(0, diagnostics_1.createDiagnostic)("error", "ambiguous-command", "Command cannot mix run, deploy, and offline-web-ui tags.")],
         };
     }
     if (offilineCount === 1) {
         if (normalizedTokens.length !== 1) {
             return {
                 intent: null,
-                diagnostics: [(0, diagnostics_1.createDiagnostic)("error", "unsupported-command-shape", "offiline-web-ui does not accept extra tokens.")],
+                diagnostics: [(0, diagnostics_1.createDiagnostic)("error", "unsupported-command-shape", "offline-web-ui does not accept extra tokens.")],
             };
         }
         return {

@@ -56,7 +56,7 @@ const rejectedCases = [
   ["run"],
   ["deploy"],
   ["deploy", "default"],
-  ["offiline-web-ui", "extra"],
+  ["offline-web-ui", "extra"],
   ["deploy", "last"],
   ["run", "deploy"],
   ["run", "deploy", "local"],

@@ -12,7 +12,8 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "docs/readme/logo/envheaven-logo.svg"
   ],
   "engines": {
     "node": ">=20"
@@ -29,6 +30,17 @@
     "env",
     "jsonc"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EnvHeaven/EnvHeaven.git"
+  },
+  "homepage": "https://envheaven.com",
+  "bugs": {
+    "url": "https://github.com/EnvHeaven/EnvHeaven/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@types/ws": "^8.18.1",
     "jsonc-parser": "^3.3.1",

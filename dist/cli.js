@@ -228,7 +228,7 @@ async function main() {
             prefs = { autoStartUi: autoStart };
             process.stdout.write(autoStart
                 ? "  Saved: the Offline GUI will auto-start with the service.\n"
-                : "  Saved: Offline GUI will not auto-start (run `envheaven offiline-web-ui` anytime).\n");
+                : "  Saved: Offline GUI will not auto-start (run `envheaven offline-web-ui` anytime).\n");
         }
         const existingLock = await (0, lock_1.readLockFile)(paths);
         const daemonAlive = !!(existingLock && existingLock.daemonPort > 0 && (await (0, lock_1.isPortOpen)(existingLock.daemonPort)));
@@ -236,7 +236,7 @@ async function main() {
             const uiAlreadyUp = !!(existingLock.uiPort && existingLock.uiPort > 0 && (await (0, lock_1.isPortOpen)(existingLock.uiPort)));
             if (prefs.autoStartUi && !uiAlreadyUp) {
                 // Daemon alive but UI missing — spawn UI-only
-                const uiChild = (0, node_child_process_1.spawn)(process.execPath, [process.argv[1], "offiline-web-ui"], {
+                const uiChild = (0, node_child_process_1.spawn)(process.execPath, [process.argv[1], "offline-web-ui"], {
                     detached: true,
                     stdio: ["ignore", "ignore", "ignore"],
                     env: {
@@ -298,7 +298,7 @@ async function main() {
                 (0, diagnostics_1.createDiagnostic)("info", "daemon-started", `EnvHeaven service started on port ${String(lock.daemonPort)}.`),
                 ...(lock.uiPort
                     ? [(0, diagnostics_1.createDiagnostic)("info", "offiline-web-ui-started", `EnvHeaven Offline GUI started on port ${String(lock.uiPort)}.`)]
-                    : [(0, diagnostics_1.createDiagnostic)("info", "offiline-web-ui-hint", "Tip: run `envheaven offiline-web-ui` to launch the Offline GUI.")]),
+                    : [(0, diagnostics_1.createDiagnostic)("info", "offline-web-ui-hint", "Tip: run `envheaven offline-web-ui` to launch the Offline GUI.")]),
             ],
         }, 0, options);
         return;
@@ -457,7 +457,7 @@ async function main() {
             }
         }
         // No subcommand (or restart after stop): start the UI.
-        // This is the same logic as the offiline-web-ui start path.
+        // This is the same logic as the offline-web-ui start path.
         const existingLock2 = await (0, lock_1.readLockFile)(paths);
         const daemonAlive2 = !!(existingLock2 && existingLock2.daemonPort > 0 && (await (0, lock_1.isPortOpen)(existingLock2.daemonPort)));
         const uiAlive2 = !!(daemonAlive2 && existingLock2.uiPort && existingLock2.uiPort > 0 && (await (0, lock_1.isPortOpen)(existingLock2.uiPort)));
@@ -476,7 +476,7 @@ async function main() {
         if (daemonAlive2 && !uiAlive2) {
             spawnEnv2["ENVHEAVEN_UI_ONLY_DAEMON_PORT"] = String(existingLock2.daemonPort);
         }
-        const uiChild = (0, node_child_process_1.spawn)(process.execPath, [process.argv[1], "offiline-web-ui"], {
+        const uiChild = (0, node_child_process_1.spawn)(process.execPath, [process.argv[1], "offline-web-ui"], {
             detached: true,
             stdio: ["ignore", "ignore", "ignore"],
             env: spawnEnv2,
@@ -804,14 +804,14 @@ function parseJsonRequestArg(jsonString) {
         };
     }
     const kind = parsed["kind"];
-    const kindAlias = { service: "daemon" };
+    const kindAlias = { service: "daemon", "offline-web-ui": "offiline-web-ui" };
     const resolvedKind = kindAlias[kind] ?? kind;
     const supportedKinds = new Set(["daemon", "run", "deploy", "offiline-web-ui", "apply"]);
     if (!supportedKinds.has(resolvedKind)) {
         return {
             intent: null,
             diagnostics: [
-                (0, diagnostics_1.createDiagnostic)("error", "json-request-invalid-kind", `--json-request "kind" must be one of: service, run, deploy, offiline-web-ui. Got: "${kind}".`),
+                (0, diagnostics_1.createDiagnostic)("error", "json-request-invalid-kind", `--json-request "kind" must be one of: service, run, deploy, offline-web-ui. Got: "${kind}".`),
             ],
         };
     }
