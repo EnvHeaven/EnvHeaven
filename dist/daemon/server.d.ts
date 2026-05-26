@@ -5,6 +5,7 @@ export interface DaemonWsEvent {
     type: string;
     payload: unknown;
 }
+export declare function buildPtyDisplayPrelude(repoRoot: string, runCommand: string): string;
 export declare function startDaemon(rootDirectory: string, port?: number, stateStore?: EnvHeavenStateStore, daemonVersion?: string): Promise<{
     server: http.Server;
     killAllRuns: () => void;

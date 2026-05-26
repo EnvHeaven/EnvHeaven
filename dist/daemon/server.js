@@ -36,6 +36,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.buildPtyDisplayPrelude = buildPtyDisplayPrelude;
 exports.startDaemon = startDaemon;
 exports.buildVersionPayload = buildVersionPayload;
 const node_child_process_1 = require("node:child_process");
@@ -74,11 +75,17 @@ function readOwnPackageVersion() {
     }
 }
 function buildPtyDisplayPrelude(repoRoot, runCommand) {
-    const username = node_os_1.default.userInfo().username || "user";
-    const hostname = node_os_1.default.hostname() || "localhost";
+    const username = sanitizeTerminalPreludeSegment(node_os_1.default.userInfo().username || "user");
+    const hostname = sanitizeTerminalPreludeSegment(node_os_1.default.hostname() || "localhost");
+    const safeRepoRoot = sanitizeTerminalPreludeSegment(repoRoot);
     const promptSymbol = process.platform === "win32" ? ">" : "$";
-    const safeCommand = runCommand.replace(/\s*\r?\n\s*/g, " && ").trim();
-    return `\x1b[90m${username}@${hostname}:${repoRoot}${promptSymbol} ${safeCommand}\x1b[0m\r\n`;
+    const safeCommand = sanitizeTerminalPreludeSegment(runCommand.replace(/\s*\r?\n\s*/g, " && ")).trim();
+    return `\x1b[32m${username}@${hostname}\x1b[39m:\x1b[34m${safeRepoRoot}\x1b[39m${promptSymbol} ${safeCommand}\x1b[0m\r\n`;
+}
+function sanitizeTerminalPreludeSegment(value) {
+    return value
+        .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+        .replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
 }
 async function startDaemon(rootDirectory, port = 0, stateStore = new store_1.EnvHeavenStateStore(), daemonVersion) {
     const resolvedDaemonVersion = daemonVersion ?? readOwnPackageVersion();

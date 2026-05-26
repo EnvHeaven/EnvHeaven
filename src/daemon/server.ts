@@ -87,12 +87,19 @@ function readOwnPackageVersion(): string {
   }
 }
 
-function buildPtyDisplayPrelude(repoRoot: string, runCommand: string): string {
-  const username = os.userInfo().username || "user";
-  const hostname = os.hostname() || "localhost";
+export function buildPtyDisplayPrelude(repoRoot: string, runCommand: string): string {
+  const username = sanitizeTerminalPreludeSegment(os.userInfo().username || "user");
+  const hostname = sanitizeTerminalPreludeSegment(os.hostname() || "localhost");
+  const safeRepoRoot = sanitizeTerminalPreludeSegment(repoRoot);
   const promptSymbol = process.platform === "win32" ? ">" : "$";
-  const safeCommand = runCommand.replace(/\s*\r?\n\s*/g, " && ").trim();
-  return `\x1b[90m${username}@${hostname}:${repoRoot}${promptSymbol} ${safeCommand}\x1b[0m\r\n`;
+  const safeCommand = sanitizeTerminalPreludeSegment(runCommand.replace(/\s*\r?\n\s*/g, " && ")).trim();
+  return `\x1b[32m${username}@${hostname}\x1b[39m:\x1b[34m${safeRepoRoot}\x1b[39m${promptSymbol} ${safeCommand}\x1b[0m\r\n`;
+}
+
+function sanitizeTerminalPreludeSegment(value: string): string {
+  return value
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
 }
 
 export async function startDaemon(
