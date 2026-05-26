@@ -1,297 +1,136 @@
-# envheaven
+<p align="center">
+  <a href="https://envheaven.com">
+    <img src="./docs/readme/logo/envheaven-logo.png" alt="EnvHeaven" width="96" />
+  </a>
+</p>
 
-`envheaven@0.1.0` is a narrow npm CLI for discovering `.envheaven` env-repo files, resolving a small supported target set, exposing a minimal HTTP daemon, and delegating inspection/execution to plugins loaded by package name.
+# EnvHeaven
 
-## v0.1.0 Scope
+> Experimental environment orchestration for local, deploy, and plugin-driven workflows.
 
-- Discover `.envheaven/` directories recursively from the current working directory.
-- Load files ending with `.envheaven.env-map-layer.json`.
-- Parse those files as JSONC-like input with comments and trailing commas.
-- Build an in-memory env-repo model from `repo-base.default.envheaven.env-map-layer.json` plus additional layer files.
-- Resolve `EnvMapLayers`, `fallback-list`, aliases, and deterministic merge order for supported targets.
-- Support only `Condition.Type` values `always-force` and `only-if-full-setup-completion`.
-- Support only these command intents:
-  - `envheaven`
-  - `eh`
-  - `envheaven run default`
-  - `envheaven default`
-  - `envheaven run local`
-  - `envheaven local run`
-  - `envheaven run local-01`
-  - `envheaven run fake local`
-  - `envheaven run fake local-01`
-  - `envheaven run fake-local-01`
-- `envheaven deploy local`
-- `envheaven deploy local-01`
-- `envheaven deploy local all`
-- `envheaven deploy local envheaven`
-- `envheaven deploy production`
-- `envheaven deploy production-01`
-- `envheaven deploy production @envheaven/plugins-offiline-web-ui`
-- `envheaven run install-revert`
-- `envheaven run install-revert-01`
-- `envheaven offiline-web-ui`
-- `eh run local`
-- `eh default`
+[![npm version](https://img.shields.io/npm/v/envheaven)](https://www.npmjs.com/package/envheaven)
+[![node](https://img.shields.io/node/v/envheaven)](https://www.npmjs.com/package/envheaven)
+[![npm downloads](https://img.shields.io/npm/dm/envheaven)](https://www.npmjs.com/package/envheaven)
+[![license](https://img.shields.io/npm/l/envheaven)](https://www.npmjs.com/package/envheaven)
 
-## Not Implemented in v0.1.0
+> **Experimental 0.x:** EnvHeaven is currently in experimental `0.x` development. APIs, CLI commands, plugin contracts, package names, and release behavior may change before `1.0.0`. Pin versions and read release notes before using it in production workflows.
 
-- `last`
-- `development`
-- marketplace or plugin auto-install
-- deploy support beyond the current package-monorepo use case
-- env-map rewrites beyond the current normalization and materialization behavior
+## Why
 
-## Installation
+EnvHeaven is for projects where environment-specific commands, deploy targets, package versions, and local tooling need to be discoverable and repeatable instead of living only in shell history or personal notes.
 
-```bash
+It discovers `.envheaven` repositories, resolves environment maps, and lets plugins inspect or execute environment-aware actions.
+
+## What it does
+
+- Discovers `.envheaven` metadata from a repository tree.
+- Resolves environment targets such as `local-01`, `development-01`, `beta-01`, and `production-01`.
+- Runs plugin-backed `inspect` and `execute` flows for local and deploy commands.
+- Provides a local daemon API for repos, actions, versions, terminal sessions, and Dynamic View presets.
+- Tracks local artifact versions and supports dynamic artifact version tokens during publish flows.
+- Supports interactive PTY action terminals through the offline UI.
+
+## Quick start
+
+```sh
+# install the CLI
 npm install -g envheaven
+
+# check the CLI
+envheaven --help
+
+# use the short alias
+eh --help
+
+# start the local daemon
+envheaven
 ```
 
-## CLI Behavior
+The Offline Web UI is available through the `@envheaven/plugins-offiline-web-ui` package. The package name currently uses `offiline`; keep that spelling in install commands.
 
-Running `envheaven` or `eh` without arguments starts a minimal local daemon, prints its port as JSON, and prints a tip for `envheaven offiline-web-ui`.
+## Minimal `.envheaven` shape
 
-Running `envheaven offiline-web-ui` starts the daemon, loads the local UI package from the workspace when available, otherwise installs `@envheaven/plugins-offiline-web-ui` into a per-user cache, and then starts the UI server.
+EnvHeaven reads env-map layer files under `.envheaven/`, including files like:
 
-Running a supported `run` intent resolves the repo, loads the plugin declared in the resolved execution, calls `inspect()` when provided, then calls `execute()` when there are no blocking diagnostics.
+```txt
+.envheaven/
+  safe-env-map-layers/
+  secret-env-map-layers/
+```
 
-Running a supported `deploy` intent materializes repo-level deploy steps and per-artifact distributor executions, then executes them sequentially. The current deploy support is intentionally narrow and targets EnvHeaven-style package monorepos that define `RepoDeployExecutions` and `ArtifactsDistributors`.
-
-Deploy commands can now accept additional artifact selector tags after the deploy target. If no selectors are supplied, all deployable artifacts still run. The special selector `all` is an explicit wildcard that also selects every artifact. Selectors match artifact ids, package names, and common aliases like `envheaven` or `plugins-nodejs-pnpm`. Ambiguous selectors are rejected.
-
-Running `envheaven run install-revert` (or `envheaven run install-revert-01`) reinstalls all four EnvHeaven packages from the public npm registry globally using pnpm. This is the canonical "undo local dev install" command. Unlike other `run` intents, `install-revert` does not use a plugin; it is routed through the repo-level deploy execution path (`RepoDeployExecutions.install-revert-01`) which runs a `pnpm add --global` step for each package.
-
-On Windows, direct `pnpm` and `npm` deploy steps run natively in the Windows host environment for the package-monorepo workflow. Other commands still follow the existing WSL delegation path in v0.1.0.
-
-The CLI prints a JSON payload containing parsed intent, resolved plan, execution details, and severity-tagged diagnostics.
-
-## Minimal Env-Repo Shape
-
-`envheaven` keeps the accepted schema intentionally small. v0.1.0 reads these top-level properties when present:
-
-- `EnvMapLayers`
-- `aliases` or `Aliases`
-- `fallback-list`, `fallbackList`, or `FallbackList`
-
-Run-oriented env layers may remain execution-free. v0.1.0 can now:
-
-- materialize `run` plans from `ArtifactsRunners`
-- materialize `deploy` plans from `RepoDeployExecutions` and `ArtifactsDistributors`
-
-`Type: "fallback-list"` layers may point at another layer through `TargetName`. v0.1.0 now dereferences that chain recursively before merge resolution and reports `requestedTarget`, `resolvedTarget`, `targetResolutionTrace`, `mergeOrder`, and `trace` in the resolved plan.
+A typical layer can define artifacts and deploy executions:
 
 ```jsonc
 {
-  "fallback-list": ["local-user-overrides-01"],
-  "EnvMapLayers": {
-    "default": {
-      "Execution": {
-        "pluginPackage": "@envheaven/plugins-nodejs-pnpm",
-        "command": "node",
-        "args": ["script.js"],
-        "env": {
-          "EH_TARGET": "default"
-        },
-        "cwd": "."
-      }
-    },
-    "local": {
-      "Type": "fallback-list",
-      "TargetName": "local-01"
-    },
-    "local-01": {
-      "fallback-list": ["default"],
-      "Execution": {
-        "pluginPackage": "@envheaven/plugins-nodejs-pnpm",
-        "args": ["local-script.js"]
-      }
+  "Artifacts": {
+    "web-site-01-fe-01": {
+      "RepoCloneFolderPath": "./artifacts/web-site-01-fe-01",
+      "PackageName": "web-site-01-fe-01"
     }
-  }
-}
-```
-
-## Plugin Contract
-
-Plugins are loaded by package name through normal Node module resolution from the inspected env-repo root. A plugin should export `inspect(context)` and/or `execute(plan, context)`.
-
-Known valid package names in the v0.1.0 examples:
-
-- `@envheaven/plugins-nodejs-pnpm`
-- `@envheaven/plugins-firebase-hosting-deploy`
-
-```ts
-import type {
-  EnvHeavenPlugin,
-  PluginExecuteResult,
-  PluginInspectResult,
-  PluginRuntimeContext,
-  ResolvedPlan,
-} from "envheaven";
-
-export const plugin: EnvHeavenPlugin = {
-  inspect(context: PluginRuntimeContext): PluginInspectResult {
-    return {
-      details: {
-        repoRoot: context.repoRoot
-      }
-    };
   },
-  async execute(plan: ResolvedPlan, context: PluginRuntimeContext): Promise<PluginExecuteResult> {
-    const result = await context.spawnExecution({
-      command: plan.execution?.command ?? "node",
-      args: plan.execution?.args ?? [],
-      env: plan.execution?.env ?? {},
-      cwd: plan.execution?.cwd
-    });
-
-    return {
-      exitCode: result.exitCode,
-      details: {
-        signal: result.signal,
-        requestedTarget: plan.requestedTarget,
-        resolvedTarget: plan.resolvedTarget
-      }
-    };
-  }
-};
-```
-
-## Daemon Endpoints
-
-The daemon uses Node's built-in `http` module and exposes read-only JSON endpoints:
-
-- `GET /repo/discovery`
-- `GET /plugin/status`
-- `GET /plans/default`
-- `GET /plans/local`
-- `GET /plans/local-01`
-- `GET /plans/fake-local`
-- `GET /plans/fake-local-01`
-
-The daemon now also exposes local-state and version-registry endpoints for the UI:
-
-- `GET /api/status`
-- `GET /api/repos`
-- `POST /api/repos/select`
-- `GET /api/versions`
-- `POST /api/versions/set`
-- `POST /api/versions/increment`
-
-## Version registry and dynamic artifact versions
-
-EnvHeaven keeps a per-user local version registry for artifact deploys and UI state:
-
-- Windows: `%LOCALAPPDATA%\\EnvHeaven\\state\\state.json`
-- Linux: `$XDG_STATE_HOME/envheaven/state.json` or `~/.local/state/envheaven/state.json`
-
-For `production-01`, the registry's `nextVersion` overrides the checked-in `package.json` version at publish time. EnvHeaven temporarily rewrites `package.json`, runs `npm publish`, and restores the original file afterward. On success it advances:
-
-- `lastVersion = deployed version`
-- `nextVersion = patch increment of deployed version`
-
-If no registry entry exists, production deploy falls back to the current `package.json` version and emits a warning diagnostic.
-
-`dynamic-artifact-version` can be used in artifact env vars. During execution it resolves to the registry value for the current repo and artifact, falling back to the artifact `package.json` version when no registry record exists yet.
-
-## Git tagging
-
-Successful production deploys create a local tag in the artifact repo when the artifact lives in a nested git repo or submodule:
-
-- `build-v<version>_<deployTarget>`
-
-Tags are local by default. Set `EH_GIT_PUSH_TAGS=1` to push them to `origin`.
-
-## Example Output
-
-`envheaven run local`
-
-```json
-{
-  "intent": {
-    "kind": "run",
-    "target": "local"
-  },
-  "plan": {
-    "requestedTarget": "local",
-    "resolvedTarget": "local-01",
-    "targetResolutionTrace": ["local", "local-01"],
-    "mergeOrder": ["default", "local-01"]
-  },
-  "execution": {
-    "exitCode": 0
-  },
-  "diagnostics": [
-    {
-      "severity": "info",
-      "code": "optional-layer-missing"
-    }
-  ]
-}
-```
-
-Deploy example:
-
-```json
-{
-  "intent": {
-    "kind": "deploy",
-    "target": "local-01"
-  },
-  "plan": {
-    "kind": "deploy",
-    "requestedTarget": "local-01",
-    "resolvedTarget": "local-01"
-  },
-  "deploy": {
-    "repoExecutions": [
+  "RepoDeployExecutions": {
+    "local-01": [
       {
-        "name": "workspace-install"
-      }
-    ],
-    "artifactExecutions": [
-      {
-        "runnerName": "envheaven-package-local-01"
+        "Name": "workspace-build",
+        "Execution": {
+          "command": "pnpm",
+          "args": ["run", "build"],
+          "cwd": "."
+        }
       }
     ]
   }
 }
 ```
 
-Rejected command:
+## Packages
 
-```json
-{
-  "diagnostics": [
-    {
-      "severity": "error",
-      "code": "unsupported-command-shape",
-      "message": "Unsupported or ambiguous deploy target: \"default\"."
-    }
-  ]
-}
+| Package | Status | Purpose |
+|---|---|---|
+| `envheaven` | published | CLI, daemon, plugin host, environment resolution |
+| `@envheaven/plugins-nodejs-pnpm` | published | Run pnpm scripts and pnpm exec specs through EnvHeaven |
+| `@envheaven/plugins-firebase-hosting-deploy` | published | Deploy Firebase Hosting targets through EnvHeaven |
+| `@envheaven/plugins-offiline-web-ui` | published | Local offline UI for daemon, actions, state, versions, and Dynamic View |
+| `@envheaven/plugins-aws-s3-cdn-deploy` | local / NPM not verified | Append-only AWS S3 CDN deploy plugin |
+
+## Plugin contract
+
+Plugins are loaded by package name and may expose:
+
+```ts
+inspect?(context): Promise<PluginInspectResult> | PluginInspectResult;
+execute?(plan, context): Promise<PluginExecuteResult> | PluginExecuteResult;
 ```
 
-Daemon startup:
+The host provides repository context, diagnostics, and a process execution helper.
 
-```json
-{
-  "mode": "daemon",
-  "port": 43123,
-  "diagnostics": [
-    {
-      "severity": "info",
-      "code": "daemon-started",
-      "message": "EnvHeaven daemon started on port 43123."
-    }
-  ]
-}
+## Release channels
+
+Public NPM dist-tags verified for the current package family:
+
+| Tag | Meaning |
+|---|---|
+| `latest` | current public stable-ish `0.x` channel |
+| `exp` | experimental prerelease channel |
+
+Local version registry tracks may include `exp`, `canary`, `alpha`, `beta`, `rc`, and `release`, but `canary`, `alpha`, `beta`, and `rc` were not verified as public NPM dist-tags.
+
+## Current status
+
+EnvHeaven is usable for early CLI, daemon, plugin, local version registry, and package deploy workflows. Public documentation and package metadata are still being consolidated.
+
+Do not treat the `0.x` API, command set, or plugin contract as stable.
+
+## Contributing
+
+Use Node.js `>=20`. Build and test from the package root:
+
+```sh
+pnpm install
+pnpm run build
+pnpm test
 ```
 
-## Limitations
+## License
 
-- Windows deploy steps that invoke `pnpm` or `npm` are executed natively, while other commands still use the existing `wsl` delegation path in v0.1.0.
-- The resolver is intentionally conservative and only understands a small subset of the env-map model.
-- Unsupported condition types are hard errors.
-- Missing optional fallback layers are reported as info-level diagnostics and do not stop the repo from loading.
-- The daemon landing page is minimal and the daemon does not execute plans.
+MIT, as declared in `package.json`.
